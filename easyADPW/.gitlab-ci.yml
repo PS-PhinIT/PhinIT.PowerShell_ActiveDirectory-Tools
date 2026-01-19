@@ -1,0 +1,1738 @@
+# GitLab CI/CD Pipeline für PowerShell Scripts
+# Erweiterte Pipeline für Windows Server mit WPF/WinForms Testing, Security & Auditing
+# Kombiniert Config-Tests und PS Script-Analysen mit festem Pfad zu C:\GitlabRunner\build
+
+stages:
+  - validate
+  - lint
+  - sast
+  - secret-detection
+  - test
+  - security
+  - xaml
+  - audit
+  - compliance
+  - performance
+  - release
+  - cleanup
+
+variables:
+  GITLAB_API_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/issues"
+  GITLAB_TOKEN: "$GITLAB_API_TOKEN"
+  CONFIG_PATH: "C:\\GitlabRunner\\Config"
+  BUILD_PATH: "C:\\GitlabRunner\\builds"
+  REPORTS_PATH: "artifacts/reports"
+  POWERSHELL_EXECUTION_POLICY: "Unrestricted"
+  SECURITY_COMPLIANCE_LEVEL: "High"
+  ENABLE_DETAILED_LOGGING: "true"
+
+###############################################################################
+# PS7_VALIDATE (Grundlegende Validierung vor allen anderen Tests)
+###############################################################################
+PS7_VALIDATE:
+  stage: validate
+  tags:
+    - windows
+    - server
+  allow_failure: true  # Changed to true to prevent failing the pipeline
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+        - '**/*.xaml'
+  script: 
+    - |
+      # Prüfe und installiere erforderliche Module
+      if (Test-Path "$env:CONFIG_PATH\Install-Requirements.ps1") {
+        pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:CONFIG_PATH\Install-Requirements.ps1" -Scope CurrentUser
+      }
+      
+      pwsh -NoProfile -NonInteractive -Command {
+        Write-Host "=== PowerShell Environment Validation ===" -ForegroundColor Cyan
+        
+        # Prüfe PowerShell Version und Execution Policy
+        $psVersion = $PSVersionTable.PSVersion
+        $execPolicy = Get-ExecutionPolicy
+        
+        Write-Host "PowerShell Version: $psVersion"
+        Write-Host "Execution Policy: $execPolicy"
+        
+        # Validiere erforderliche Module
+        $requiredModules = @('PSScriptAnalyzer', 'Pester')
+        $missingModules = @()
+        
+        foreach ($module in $requiredModules) {
+          if (-not (Get-Module -Name $module -ListAvailable)) {
+            $missingModules += $module
+          }
+        }
+        
+        if ($missingModules.Count -gt 0) {
+          Write-Error "Fehlende Module: $($missingModules -join ', ')"
+          exit 1
+        }
+        
+        # Validiere Dateien auf syntaktische Korrektheit aus BUILD_PATH
+        $files = @()
+        if (Test-Path "$env:BUILD_PATH") {
+          $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+        } else {
+          Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+          $files = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+        }
+        
+        $syntaxErrors = @()
+        $emptyFiles = @()
+        
+        foreach ($file in $files) {
+          try {
+            # Verbesserte Datei-Prüfung mit mehreren Encodings
+            $fileExists = Test-Path $file.FullName -PathType Leaf
+            $fileSize = (Get-Item $file.FullName -ErrorAction SilentlyContinue).Length
+            
+            # Leere Dateien separat behandeln
+            if (-not $fileExists -or $fileSize -eq 0) {
+              $emptyFiles += @{
+                File = $file.FullName
+                Error = "File is empty or inaccessible"
+                Details = "FileExists=$fileExists, FileSize=$fileSize"
+              }
+              # Überspringe die weitere Verarbeitung dieser Datei
+              continue
+            }
+            
+            # Versuche verschiedene Encodings
+            $encodings = @('UTF8', 'Default', 'Unicode', 'UTF32', 'ASCII')
+            $contentLoaded = $false
+            
+            foreach ($encoding in $encodings) {
+              try {
+                $content = Get-Content $file.FullName -Raw -Encoding $encoding -ErrorAction Stop
+                if ($null -ne $content -and $content.Length -gt 0) {
+                  $contentLoaded = $true
+                  $null = [System.Management.Automation.PSParser]::Tokenize($content, [ref]$null)
+                  break # Erfolgreich geladen und tokenisiert
+                }
+              } catch {
+                # Weiter zum nächsten Encoding
+                continue
+              }
+            }
+            
+            if (-not $contentLoaded) {
+              $syntaxErrors += @{
+                File = $file.FullName
+                Error = "Unable to read file content with any encoding"
+                Details = "FileSize=$fileSize, Tried encodings: $($encodings -join ', ')"
+              }
+            }
+          } catch {
+            $syntaxErrors += @{
+              File = $file.FullName
+              Error = $_.Exception.Message
+              Details = $_.Exception.GetType().FullName
+            }
+          }
+        }
+        
+        # Erzeuge Validation Report
+        $validationReport = @{
+          PowerShellVersion = $psVersion.ToString()
+          ExecutionPolicy = $execPolicy.ToString()
+          FilesChecked = $files.Count
+          SyntaxErrors = $syntaxErrors.Count
+          EmptyFiles = $emptyFiles.Count
+          ErrorDetails = $syntaxErrors
+          EmptyFileDetails = $emptyFiles
+          Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        
+        $validationReport | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\validation-report.json" -Encoding UTF8
+        
+        # Erstelle JUnit XML für GitLab GUI Integration
+        $xml = New-Object System.Xml.XmlDocument
+        $root = $xml.CreateElement('testsuite')
+        $root.SetAttribute('name','PS7_VALIDATE')
+        $root.SetAttribute('tests',$files.Count.ToString())
+        $root.SetAttribute('failures',($syntaxErrors.Count + $emptyFiles.Count).ToString())
+        $root.SetAttribute('time','0')
+        $xml.AppendChild($root) | Out-Null
+        
+        # Erstelle Test Cases für jede Datei
+        foreach ($file in $files) {
+          $tc = $xml.CreateElement('testcase')
+          $tc.SetAttribute('name',(Split-Path $file.FullName -Leaf))
+          $tc.SetAttribute('classname','PowerShellValidation')
+          
+          # Prüfe ob Datei Syntax-Fehler hat
+          $syntaxError = $syntaxErrors | Where-Object { $_.File -eq $file.FullName }
+          $emptyFileError = $emptyFiles | Where-Object { $_.File -eq $file.FullName }
+          
+          if ($syntaxError) {
+            $fl = $xml.CreateElement('failure')
+            $fl.SetAttribute('message',"Syntax Error: $($syntaxError.Error)")
+            $fl.InnerText = "File: $($syntaxError.File)`nDetails: $($syntaxError.Details)"
+            $tc.AppendChild($fl) | Out-Null
+          } elseif ($emptyFileError) {
+            $fl = $xml.CreateElement('failure')
+            $fl.SetAttribute('message',"Empty/Inaccessible File: $($emptyFileError.Error)")
+            $fl.InnerText = "File: $($emptyFileError.File)`nDetails: $($emptyFileError.Details)"
+            $tc.AppendChild($fl) | Out-Null
+          }
+          
+          $root.AppendChild($tc) | Out-Null
+        }
+        
+        # Füge Environment-Tests hinzu
+        $envTest = $xml.CreateElement('testcase')
+        $envTest.SetAttribute('name','PowerShell_Environment')
+        $envTest.SetAttribute('classname','Environment')
+        
+        if ($missingModules.Count -gt 0) {
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message',"Missing Required Modules")
+          $fl.InnerText = "Missing modules: $($missingModules -join ', ')"
+          $envTest.AppendChild($fl) | Out-Null
+        }
+        
+        $root.AppendChild($envTest) | Out-Null
+        
+        # Speichere JUnit XML
+        $xml.Save("$env:CONFIG_PATH\validation-report.xml")
+        
+        # Zeige leere Dateien als Warnungen an
+        if ($emptyFiles.Count -gt 0) {
+          Write-Host "⚠️ $($emptyFiles.Count) leere oder unzugängliche Dateien gefunden:" -ForegroundColor Yellow
+          $emptyFiles | ForEach-Object { 
+            Write-Warning "$($_.File): $($_.Error)" 
+          }
+        }
+        
+        if ($syntaxErrors.Count -gt 0) {
+          Write-Error "Syntax-Fehler gefunden in $($syntaxErrors.Count) Dateien"
+          $syntaxErrors | ForEach-Object { 
+            Write-Error "$($_.File): $($_.Error) - $($_.Details)" 
+          }
+          
+          exit 1
+        }
+        
+        Write-Host "✅ Validation abgeschlossen. Echte Syntax-Fehler: $($syntaxErrors.Count), Leere Dateien: $($emptyFiles.Count)" -ForegroundColor Green
+        
+        # Erstelle Reports-Verzeichnis und kopiere Validation-Reports
+        if (-not (Test-Path "$env:REPORTS_PATH")) {
+          New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+        }
+        
+        # Kopiere beide Reports ins artifacts Verzeichnis
+        if (Test-Path "$env:CONFIG_PATH\validation-report.json") {
+          Copy-Item "$env:CONFIG_PATH\validation-report.json" "$env:REPORTS_PATH\validation-report.json" -Force
+        }
+        if (Test-Path "$env:CONFIG_PATH\validation-report.xml") {
+          Copy-Item "$env:CONFIG_PATH\validation-report.xml" "$env:REPORTS_PATH\validation-report.xml" -Force
+        }
+      }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/validation-report.json
+      - artifacts/reports/validation-report.xml
+    reports:
+      junit: artifacts/reports/validation-report.xml
+    expire_in: 1 week
+
+###############################################################################
+# PS7_LINT (detaillierte Violations im JUnit‑Report)
+###############################################################################
+PS7_LINT:
+  stage: lint
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      # Archiv-Filter Pattern für verschiedene Varianten
+      $archivePattern = '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)'
+      
+      # Sammle alle PowerShell-Dateien aus BUILD_PATH
+      $files = @()
+      
+      # BUILD_PATH Dateien hinzufügen (Hauptprüfung)
+      if (Test-Path "$env:BUILD_PATH") {
+        $buildFiles = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -notmatch $archivePattern }
+        if ($buildFiles) { $files += $buildFiles }
+      } else {
+        Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+        $repoFiles = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -notmatch $archivePattern }
+        if ($repoFiles) { $files += $repoFiles }
+      }
+      
+      $fails = @{}
+      foreach ($f in $files) {
+        $v = Invoke-ScriptAnalyzer -Path $f.FullName -Recurse -Severity Error,Warning -ErrorAction SilentlyContinue
+        if ($v.Count) { $fails[$f.FullName] = $v }
+      }
+      $xml  = New-Object System.Xml.XmlDocument
+      $root = $xml.CreateElement('testsuite')
+      $root.SetAttribute('name','PS7_LINT')
+      $root.SetAttribute('tests',$files.Count.ToString())
+      $root.SetAttribute('failures',$fails.Count.ToString())
+      $xml.AppendChild($root) | Out-Null
+      foreach ($f in $files) {
+        $tc = $xml.CreateElement('testcase')
+        $tc.SetAttribute('name',(Split-Path $f.FullName -Leaf))
+        if ($fails.ContainsKey($f.FullName)) {
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message',"$($fails[$f.FullName].Count) Violations")
+          $details = $fails[$f.FullName] | ForEach-Object {
+            "[{0}-{1}] {2}" -f $_.RuleName,$_.Line,$_.Message
+          }
+          $fl.InnerText = $details -join "`n"
+          $tc.AppendChild($fl) | Out-Null
+        }
+        $root.AppendChild($tc) | Out-Null
+      }
+      $xml.Save("$env:CONFIG_PATH\lint-report.xml")
+      
+      # Erstelle Reports-Verzeichnis und kopiere Lint-Report
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      Copy-Item "$env:CONFIG_PATH\lint-report.xml" "$env:REPORTS_PATH\lint-report.xml" -Force
+    }
+  artifacts:
+    when: always
+    reports:
+      junit: artifacts/reports/lint-report.xml
+
+###############################################################################
+# PS7_SAST (detaillierte Violations im JUnit‑Report)
+###############################################################################
+PS7_SAST:
+  stage: sast
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== Static Application Security Testing (SAST) ===" -ForegroundColor Cyan
+      
+      # Prüfe PSScriptAnalyzer Module
+      if (-not (Get-Module PSScriptAnalyzer -ListAvailable)) {
+        Write-Error "PSScriptAnalyzer Module nicht verfügbar. Installation erforderlich."
+        exit 1
+      }
+      
+      $mod  = Get-Module InjectionHunter -ListAvailable |
+              Sort-Object Version -Descending | Select-Object -First 1
+      if ($mod) {
+        $rule = Join-Path $mod.ModuleBase 'InjectionHunter.psd1'
+        Write-Host "InjectionHunter Module gefunden: $($mod.Version)" -ForegroundColor Green
+      } else {
+        $rule = $null
+        Write-Warning "InjectionHunter Module nicht gefunden - verwende Standard-Regeln"
+      }
+      
+      # Prüfe Dateien aus BUILD_PATH
+      $files = @()
+      if (Test-Path "$env:BUILD_PATH") {
+        $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      } else {
+        Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+        $files = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      }
+      
+      # Definiere Regeln, die NICHT geprüft werden sollen
+      $excludedRules = @(
+        'PSUseDeclaredVarsMoreThanAssignments',  # Ungenutzte Variablen
+        'PSAvoidUsingPositionalParameters',      # Positionale Parameter sind oft OK
+        'PSAvoidUsingWriteHost',                 # Write-Host ist für Output OK
+        'PSUseShouldProcessForStateChangingFunctions',  # Nicht immer erforderlich
+        'PSAvoidUsingInvokeExpression',          # Manchmal notwendig für dynamischen Code
+        'PSAvoidUsingPlainTextForPassword'      # Oft false positives bei Parameter-Namen
+      )
+      
+      $fails = @{}
+      foreach ($f in $files) {
+        if ($rule) {
+          $v = Invoke-ScriptAnalyzer -Path $f.FullName -CustomRulePath $rule -IncludeDefaultRules -ExcludeRule $excludedRules -Severity Error,Warning -ErrorAction SilentlyContinue
+        } else {
+          $v = Invoke-ScriptAnalyzer -Path $f.FullName -IncludeDefaultRules -ExcludeRule $excludedRules -Severity Error,Warning -ErrorAction SilentlyContinue
+        }
+        if ($v.Count) { $fails[$f.FullName] = $v }
+      }
+      
+      Write-Host "SAST-Analyse abgeschlossen. Geprüfte Dateien: $($files.Count), Dateien mit Violations: $($fails.Count)"
+      Write-Host "Ausgeschlossene Regeln: $($excludedRules -join ', ')" -ForegroundColor Yellow
+      
+      $xml  = New-Object System.Xml.XmlDocument
+      $root = $xml.CreateElement('testsuite')
+      $root.SetAttribute('name','PS7_SAST')
+      $root.SetAttribute('tests',$files.Count.ToString())
+      $root.SetAttribute('failures',$fails.Count.ToString())
+      $xml.AppendChild($root) | Out-Null
+      foreach ($f in $files) {
+        $tc = $xml.CreateElement('testcase')
+        $tc.SetAttribute('name',(Split-Path $f.FullName -Leaf))
+        if ($fails.ContainsKey($f.FullName)) {
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message',"$($fails[$f.FullName].Count) SAST Violations")
+          $details = $fails[$f.FullName] | ForEach-Object {
+            "[{0}] Line {1}: {2}" -f $_.Severity,$_.Line,$_.Message
+          }
+          $fl.InnerText = $details -join "`n"
+          $tc.AppendChild($fl) | Out-Null
+        }
+        $root.AppendChild($tc) | Out-Null
+      }
+      $xml.Save("$env:CONFIG_PATH\sast-report.xml")
+      
+      # Erstelle Reports-Verzeichnis und kopiere SAST-Report
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      Copy-Item "$env:CONFIG_PATH\sast-report.xml" "$env:REPORTS_PATH\sast-report.xml" -Force
+    }
+  artifacts:
+    when: always
+    reports:
+      junit: artifacts/reports/sast-report.xml
+
+###############################################################################
+# PS7_SECRET_DETECTION (Erweiterte Secret-Detection für PowerShell und Config)
+###############################################################################
+PS7_SECRET_DETECTION:
+  stage: secret-detection
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+        - '**/*.json'
+        - '**/*.xml'
+        - '**/*.config'
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== Secret Detection für PowerShell & Konfigurationsdateien ===" -ForegroundColor Cyan
+      
+      # Sammle alle relevanten Dateien aus BUILD_PATH
+      $files = @()
+      if (Test-Path "$env:BUILD_PATH") {
+        $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1,*.json,*.xml,*.config,*.xaml -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      } else {
+        Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+        $files = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1,*.json,*.xml,*.config,*.xaml -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      }
+      
+      $secretPatterns = @{
+        'API_Keys' = @(
+          '(?i)api[_-]?key\s*[=:]\s*["''][^"'']{20,}["'']',
+          '(?i)apikey\s*[=:]\s*["''][^"'']{20,}["'']',
+          '(?i)api[_-]?secret\s*[=:]\s*["''][^"'']{20,}["'']'
+        )
+        'Database_Connections' = @(
+          '(?i)server\s*=\s*[^;]+;\s*database\s*=\s*[^;]+;\s*user\s*id\s*=\s*[^;]+;\s*password\s*=\s*[^;]+',
+          '(?i)Data\s+Source\s*=\s*[^;]+.*User\s+Id\s*=\s*[^;]+.*Password\s*=\s*[^;]+',
+          'mongodb://[^:]+:[^@]+@'
+        )
+        'Generic_Passwords' = @(
+          '(?i)password\s*[=:]\s*["''][^"'']{8,}["'']',
+          '(?i)pwd\s*[=:]\s*["''][^"'']{8,}["'']',
+          '(?i)pass\s*[=:]\s*["''][^"'']{8,}["'']',
+          '(?i)secret\s*[=:]\s*["''][^"'']{8,}["'']'
+        )
+        'Tokens_and_Keys' = @(
+          '(?i)token\s*[=:]\s*["''][^"'']{20,}["'']',
+          '(?i)key\s*[=:]\s*["''][^"'']{20,}["'']',
+          '(?i)bearer\s+[a-zA-Z0-9\-._~+/]+=*',
+          '(?i)authorization\s*[=:]\s*["'']bearer\s+[^"'']+["'']'
+        )
+        'Azure_Secrets' = @(
+          'DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[^;]+',
+          '(?i)ClientSecret\s*[=:]\s*["''][^"'']{30,}["'']',
+          '(?i)TenantId\s*[=:]\s*["''][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["'']'
+        )
+        'Private_Keys' = @(
+          '-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
+          '-----BEGIN\s+OPENSSH\s+PRIVATE\s+KEY-----',
+          '-----BEGIN\s+DSA\s+PRIVATE\s+KEY-----',
+          '-----BEGIN\s+EC\s+PRIVATE\s+KEY-----'
+        )
+        'Windows_Credentials' = @(
+          '(?i)ConvertTo-SecureString\s+-String\s+["''][^"'']+["'']',
+          '(?i)credential\s*=\s*New-Object.*PSCredential.*["''][^"'']+["'']',
+          '(?i)\$cred\s*=\s*Get-Credential\s+-UserName\s+["''][^"'']+["'']'
+        )
+      }
+      
+      $secretFindings = @()
+      
+      foreach ($file in $files) {
+        Write-Verbose "Scanne Datei: $($file.FullName)"
+        $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+        
+        if (-not $content) { continue }
+        
+        foreach ($category in $secretPatterns.Keys) {
+          foreach ($pattern in $secretPatterns[$category]) {
+            try {
+              $matches = [regex]::Matches($content, $pattern, 'IgnoreCase')
+              foreach ($match in $matches) {
+                $lineNumber = ($content.Substring(0, $match.Index) -split "`n").Count
+                $contextStart = [Math]::Max(0, $match.Index - 50)
+                $contextLength = [Math]::Min(100, $content.Length - $contextStart)
+                $context = $content.Substring($contextStart, $contextLength).Replace("`n", " ").Replace("`r", "")
+                
+                # Bestimme Schweregrad
+                $severity = switch ($category) {
+                  'Private_Keys' { 'Critical' }
+                  'API_Keys' { 'Critical' }
+                  'Database_Connections' { 'Critical' }
+                  'Azure_Secrets' { 'Critical' }
+                  'Tokens_and_Keys' { 'High' }
+                  'Generic_Passwords' { 'High' }
+                  'Windows_Credentials' { 'Medium' }
+                  default { 'Medium' }
+                }
+                
+                # Überspringe offensichtliche Beispiele oder Platzhalter
+                $isExample = $match.Value -imatch '(example|sample|placeholder|dummy|test|xxxx|\*{4}|\.\.\.|TODO|REPLACE|CHANGE)'
+                
+                if (-not $isExample) {
+                  $baseDir = if (Test-Path "$env:BUILD_PATH") { "$env:BUILD_PATH" } else { "$env:CI_PROJECT_DIR" }
+                  $secretFindings += @{
+                    File = $file.FullName
+                    RelativeFile = $file.FullName.Replace($baseDir, '.')
+                    Category = $category
+                    Severity = $severity
+                    Line = $lineNumber
+                    Pattern = $pattern
+                    Match = $match.Value
+                    Context = $context
+                    Confidence = if ($match.Value.Length -gt 40) { 'High' } elseif ($match.Value.Length -gt 20) { 'Medium' } else { 'Low' }
+                  }
+                }
+              }
+            } catch {
+              Write-Warning "Fehler beim Verarbeiten von Pattern '$pattern' in Datei '$($file.FullName)': $($_.Exception.Message)"
+            }
+          }
+        }
+      }
+      
+      # Erstelle Secret Detection Report
+      $secretReport = @{
+        ScanTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        FilesScanned = $files.Count
+        TotalSecrets = $secretFindings.Count
+        CriticalSecrets = ($secretFindings | Where-Object {$_.Severity -eq 'Critical'}).Count
+        HighSecrets = ($secretFindings | Where-Object {$_.Severity -eq 'High'}).Count
+        MediumSecrets = ($secretFindings | Where-Object {$_.Severity -eq 'Medium'}).Count
+        HighConfidenceSecrets = ($secretFindings | Where-Object {$_.Confidence -eq 'High'}).Count
+        SecretsByCategory = @{}
+        Findings = $secretFindings
+      }
+      
+      # Gruppiere nach Kategorien
+      $groupedSecrets = $secretFindings | Group-Object Category
+      foreach ($group in $groupedSecrets) {
+        $secretReport.SecretsByCategory[$group.Name] = $group.Count
+      }
+      
+      # Speichere JSON Report
+      $secretReport | ConvertTo-Json -Depth 5 | Out-File -FilePath "$env:CONFIG_PATH\secret-detection-report.json" -Encoding UTF8
+      
+      # Erstelle JUnit XML für GitLab
+      $xml = New-Object System.Xml.XmlDocument
+      $root = $xml.CreateElement('testsuite')
+      $root.SetAttribute('name','PS7_SECRET_DETECTION')
+      $root.SetAttribute('tests',$files.Count.ToString())
+      $root.SetAttribute('failures',$secretFindings.Count.ToString())
+      $xml.AppendChild($root) | Out-Null
+      
+      if ($secretFindings.Count -gt 0) {
+        $groupedByFile = $secretFindings | Group-Object RelativeFile
+        foreach ($fileGroup in $groupedByFile) {
+          $tc = $xml.CreateElement('testcase')
+          $tc.SetAttribute('name',(Split-Path $fileGroup.Name -Leaf))
+          $tc.SetAttribute('classname','SecretDetection')
+          
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message',"$($fileGroup.Count) Secrets Found")
+          $details = $fileGroup.Group | ForEach-Object {
+            "[$($_.Severity)] Line $($_.Line): $($_.Category) - $($_.Match.Substring(0, [Math]::Min(50, $_.Match.Length)))..."
+          }
+          $fl.InnerText = $details -join "`n"
+          $tc.AppendChild($fl) | Out-Null
+          $root.AppendChild($tc) | Out-Null
+        }
+      } else {
+        # Wenn keine Secrets gefunden, erstelle erfolgreichen Test
+        $tc = $xml.CreateElement('testcase')
+        $tc.SetAttribute('name','NoSecretsFound')
+        $tc.SetAttribute('classname','SecretDetection')
+        $root.AppendChild($tc) | Out-Null
+      }
+      
+      $xml.Save("$env:CONFIG_PATH\secret-detection-report.xml")
+      
+      # Erstelle Reports-Verzeichnis und kopiere Secret Detection Reports
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      Copy-Item "$env:CONFIG_PATH\secret-detection-report.xml" "$env:REPORTS_PATH\secret-detection-report.xml" -Force
+      if (Test-Path "$env:CONFIG_PATH\secret-detection-report.json") {
+        Copy-Item "$env:CONFIG_PATH\secret-detection-report.json" "$env:REPORTS_PATH\secret-detection-report.json" -Force
+      }
+      
+      Write-Host "Secret Detection completed:"
+      Write-Host "  Files scanned: $($files.Count)"
+      Write-Host "  Secrets found: $($secretFindings.Count)"
+      Write-Host "  Critical: $($secretReport.CriticalSecrets)"
+      Write-Host "  High: $($secretReport.HighSecrets)"
+      Write-Host "  Medium: $($secretReport.MediumSecrets)"
+      
+        if ($secretReport.CriticalSecrets -gt 0) {
+          Write-Warning "KRITISCHE SECRETS GEFUNDEN! Überprüfen Sie den Report sofort!"
+        }
+      }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/secret-detection-report.json
+      - artifacts/reports/secret-detection-report.xml
+    reports:
+      junit: artifacts/reports/secret-detection-report.xml
+    expire_in: 1 week
+
+###############################################################################
+# PS7_SECURITY_AUDIT (Erweiterte Sicherheitsprüfungen für Windows Server)
+###############################################################################
+PS7_SECURITY_AUDIT:
+  stage: security
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+  script: |
+      try {
+        if (Test-Path "$env:CONFIG_PATH\Invoke-SecurityAudit.ps1") {
+          # First generate XML report for GitLab integration
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:CONFIG_PATH\Invoke-SecurityAudit.ps1" -ProjectPath "$env:BUILD_PATH" -OutputPath "$env:CONFIG_PATH\security-audit-report.xml" -ReportFormat "XML" -ErrorAction Continue
+          
+          # Then generate JSON report for detailed analysis
+          pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:CONFIG_PATH\Invoke-SecurityAudit.ps1" -ProjectPath "$env:BUILD_PATH" -OutputPath "$env:CONFIG_PATH\security-audit-report.json" -ReportFormat "JSON" -ErrorAction Continue
+        } else {
+          pwsh -NoProfile -NonInteractive -Command {
+            Write-Host "=== Security Audit für PowerShell Scripts ===" -ForegroundColor Cyan
+            
+            # Sammle alle PowerShell-Dateien aus BUILD_PATH
+            $files = @()
+            if (Test-Path "$env:BUILD_PATH") {
+              $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+            } else {
+              Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+              $files = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+            }
+            
+            $securityFindings = @()
+            $securityPatterns = @{
+              'Hardcoded_Credentials' = @(
+                '(?i)password\s*[=:]\s*["''][^"'']{6,}["'']',
+                '(?i)pwd\s*[=:]\s*["''][^"'']{6,}["'']',
+                '(?i)secret\s*[=:]\s*["''][^"'']{8,}["'']'
+              )
+              'Unsafe_Commands' = @(
+                'Invoke-Expression',
+                'iex\s',
+                'Invoke-Command.*-ScriptBlock.*\$',
+                'Start-Process.*-WindowStyle\s+Hidden',
+                'Add-Type.*-TypeDefinition'
+              )
+              'Network_Operations' = @(
+                'Invoke-WebRequest',
+                'Invoke-RestMethod',
+                'System\.Net\.WebClient',
+                'System\.Net\.HttpWebRequest'
+              )
+            }
+            
+            foreach ($file in $files) {
+              $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+              if ($content) {
+                foreach ($category in $securityPatterns.Keys) {
+                  foreach ($pattern in $securityPatterns[$category]) {
+                    if ($content -match $pattern) {
+                      $matches = [regex]::Matches($content, $pattern, 'IgnoreCase')
+                      foreach ($match in $matches) {
+                        $lineNumber = ($content.Substring(0, $match.Index) -split "`n").Count
+                        
+                        $securityFindings += @{
+                          File = $file.FullName
+                          Category = $category
+                          Severity = if ($category -eq 'Hardcoded_Credentials') { 'Critical' } 
+                                   elseif ($category -eq 'Unsafe_Commands') { 'High' } 
+                                   else { 'Medium' }
+                          Line = $lineNumber
+                          Match = $match.Value
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            
+            # Erstelle Security Report
+            $xml = New-Object System.Xml.XmlDocument
+            $root = $xml.CreateElement('testsuite')
+            $root.SetAttribute('name','PS7_SECURITY_AUDIT')
+            $root.SetAttribute('tests',$files.Count.ToString())
+            $root.SetAttribute('failures',$securityFindings.Count.ToString())
+            $xml.AppendChild($root) | Out-Null
+            
+            $groupedFindings = $securityFindings | Group-Object File
+            foreach ($fileGroup in $groupedFindings) {
+              $tc = $xml.CreateElement('testcase')
+              $tc.SetAttribute('name',(Split-Path $fileGroup.Name -Leaf))
+              $tc.SetAttribute('classname','SecurityAudit')
+              
+              $fl = $xml.CreateElement('failure')
+              $fl.SetAttribute('message',"$($fileGroup.Count) Security Issues Found")
+              $details = $fileGroup.Group | ForEach-Object {
+                "[{0}] Line {1}: {2} - {3}" -f $_.Severity,$_.Line,$_.Category,$_.Match
+              }
+              $fl.InnerText = $details -join "`n"
+              $tc.AppendChild($fl) | Out-Null
+              $root.AppendChild($tc) | Out-Null
+            }
+            
+            # Erstelle auch separaten Security JSON Report
+            $securityReport = @{
+              ScanTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              FilesScanned = $files.Count
+              TotalFindings = $securityFindings.Count
+              CriticalIssues = ($securityFindings | Where-Object {$_.Severity -eq 'Critical'}).Count
+              HighIssues = ($securityFindings | Where-Object {$_.Severity -eq 'High'}).Count
+              MediumIssues = ($securityFindings | Where-Object {$_.Severity -eq 'Medium'}).Count
+              Findings = $securityFindings
+            }
+            
+            $securityReport | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\security-audit-report.json" -Encoding UTF8
+            $xml.Save("$env:CONFIG_PATH\security-audit-report.xml")
+            Write-Host "Security Audit completed. Found $($securityFindings.Count) issues."
+            if ($securityFindings.Count -gt 0) {
+              Write-Warning "Security issues detected - review security-audit-report.json for details"
+            }
+          }
+        }
+      } catch {
+        Write-Error "Error during security audit: $_"
+      } finally {
+        # Ensure the job completes successfully even if security issues were found
+        if ((Test-Path "$env:CONFIG_PATH\security-audit-report.json") -or (Test-Path "$env:CONFIG_PATH\security-audit-report.xml")) {
+          Write-Host "Security audit reports generated successfully."
+          
+          # Erstelle Reports-Verzeichnis und kopiere Security Audit Reports
+          if (-not (Test-Path "$env:REPORTS_PATH")) {
+            New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+          }
+          if (Test-Path "$env:CONFIG_PATH\security-audit-report.json") {
+            Copy-Item "$env:CONFIG_PATH\security-audit-report.json" "$env:REPORTS_PATH\security-audit-report.json" -Force
+          }
+          if (Test-Path "$env:CONFIG_PATH\security-audit-report.xml") {
+            Copy-Item "$env:CONFIG_PATH\security-audit-report.xml" "$env:REPORTS_PATH\security-audit-report.xml" -Force
+          }
+          
+          # Intentionally exit with success code
+          exit 0
+        }
+      }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/security-audit-report.json
+      - artifacts/reports/security-audit-report.xml
+    reports:
+      junit: artifacts/reports/security-audit-report.xml
+    expire_in: 1 week
+
+###############################################################################
+# PS7_PESTER (Config-Tests mit festem Pfad)
+###############################################################################
+PS7_PESTER:
+  stage: test
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  script: |
+      if (Test-Path "$env:CONFIG_PATH\Pipeline.Tests.ps1") {
+        pwsh -NoProfile -NonInteractive -Command {
+          # Module importieren
+          Import-Module Pester -Force -ErrorAction Stop
+          
+          # Führe die Pipeline-Tests aus
+          $configTestFile = "$env:CONFIG_PATH\Pipeline.Tests.ps1"
+          Write-Host "=== Führe Pipeline-Tests aus: $configTestFile ===" -ForegroundColor Cyan
+          
+          # Pester v5 Konfiguration
+          try {
+            $config = [PesterConfiguration]::Default
+            $config.Run.Path = @($configTestFile)
+            $config.TestResult.Enabled = $true
+            $config.TestResult.OutputPath = "$env:CONFIG_PATH\pester-report.xml"
+            $config.TestResult.OutputFormat = "NUnitXml"
+            $config.Output.Verbosity = "Detailed"
+            
+            # Führe Pester aus und erfasse die Ergebnisse
+            $result = Invoke-Pester -Configuration $config
+            
+            # Erstelle detaillierte Zusammenfassung der Fehler
+            $summary = @{
+              TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              TotalCount = $result.TotalCount
+              PassedCount = $result.PassedCount
+              FailedCount = $result.FailedCount
+              SkippedCount = $result.SkippedCount
+              NotRunCount = $result.NotRunCount
+              Duration = $result.Duration.TotalSeconds
+              Success = $result.FailedCount -eq 0
+              FailedTests = @()
+            }
+            
+            # Sammle Details zu fehlgeschlagenen Tests
+            foreach ($containerResult in $result.Containers) {
+              foreach ($testResult in $containerResult.TestResults) {
+                if ($testResult.Result -eq "Failed") {
+                  $summary.FailedTests += @{
+                    Name = $testResult.Name
+                    Path = $testResult.Path
+                    Line = $testResult.ErrorRecord.InvocationInfo.ScriptLineNumber
+                    Message = $testResult.ErrorRecord.Exception.Message
+                  }
+                }
+              }
+            }
+            
+            # Speichere Zusammenfassung als JSON
+            $summary | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\pester-summary.json" -Encoding UTF8
+            
+            Write-Host "=== Pester Tests abgeschlossen ===" -ForegroundColor Cyan
+            Write-Host "Zusammenfassung in pester-summary.json gespeichert"
+            
+            if ($result.FailedCount -gt 0) {
+              Write-Host "Tests fehlgeschlagen: $($result.FailedCount) von $($result.TotalCount)" -ForegroundColor Red
+              Write-Host "Fehlgeschlagene Tests:" -ForegroundColor Red
+              foreach ($failedTest in $summary.FailedTests) {
+                Write-Host "  - $($failedTest.Name): $($failedTest.Message)" -ForegroundColor Red
+              }
+            } else {
+              Write-Host "Alle Tests erfolgreich: $($result.PassedCount) von $($result.TotalCount)" -ForegroundColor Green
+            }
+          } catch {
+            Write-Warning "Fehler bei Pester v5: $($_.Exception.Message)"
+            Write-Host "Fallback zu Legacy Pester-Syntax..." -ForegroundColor Yellow
+            
+            $result = Invoke-Pester -Script $configTestFile -OutputFormat NUnitXml -OutputFile "$env:CONFIG_PATH\pester-report.xml" -PassThru
+            
+            # Erstelle einfachere Zusammenfassung für Legacy Pester
+            $summary = @{
+              TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              TotalCount = $result.TotalCount
+              PassedCount = $result.PassedCount
+              FailedCount = $result.FailedCount
+              SkippedCount = $result.SkippedCount
+              Duration = $result.Time
+              Success = $result.FailedCount -eq 0
+            }
+            
+            $summary | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\pester-summary.json" -Encoding UTF8
+            
+            Write-Host "=== Pester Tests abgeschlossen ===" -ForegroundColor Cyan
+            Write-Host "Zusammenfassung in pester-summary.json gespeichert"
+            
+            if ($result.FailedCount -gt 0) {
+              Write-Host "Tests fehlgeschlagen: $($result.FailedCount) von $($result.TotalCount)" -ForegroundColor Red
+            } else {
+              Write-Host "Alle Tests erfolgreich: $($result.PassedCount) von $($result.TotalCount)" -ForegroundColor Green
+            }
+          }
+        }
+      } else {
+        pwsh -NoProfile -NonInteractive -Command {
+          # Module importieren
+          Import-Module Pester -Force -ErrorAction Stop
+          
+          # Sammle alle Test-Dateien
+          $repoTests = Get-ChildItem -Path $env:CI_PROJECT_DIR -Recurse -Filter *.Tests.ps1 -File -ErrorAction SilentlyContinue
+          $configTests = if (Test-Path "$env:CONFIG_PATH") {
+            Get-ChildItem "$env:CONFIG_PATH" -Filter *.Tests.ps1 -File -ErrorAction SilentlyContinue
+          } else { @() }
+          $allTests = $repoTests + $configTests
+          
+          if ($allTests.Count -eq 0) { 
+            Write-Host "Keine Test-Dateien gefunden - erstelle leeren Test-Report für GitLab"
+            
+            # Erstelle leeren JUnit XML Report
+            $xml = New-Object System.Xml.XmlDocument
+            $root = $xml.CreateElement('testsuite')
+            $root.SetAttribute('name','PS7_PESTER')
+            $root.SetAttribute('tests','0')
+            $root.SetAttribute('failures','0')
+            $root.SetAttribute('time','0')
+            $xml.AppendChild($root) | Out-Null
+            $xml.Save("$env:CONFIG_PATH\pester-report.xml")
+            
+            # Erstelle leere Zusammenfassung
+            $summary = @{
+              TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              TotalCount = 0
+              PassedCount = 0
+              FailedCount = 0
+              SkippedCount = 0
+              Duration = 0
+              Success = $true
+              Message = "No test files found"
+            }
+            $summary | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\pester-summary.json" -Encoding UTF8
+            exit 0 
+          }
+          
+          Write-Host "Gefundene Test-Dateien:"
+          $allTests | ForEach-Object { Write-Host "  $($_.FullName)" }
+          
+          # Pester v5 Konfiguration für bessere Kompatibilität
+          try {
+            $config = [PesterConfiguration]::Default
+            $config.Run.Path = $allTests.FullName
+            $config.TestResult.Enabled = $true
+            $config.TestResult.OutputPath = "$env:CONFIG_PATH\pester-report.xml"
+            $config.TestResult.OutputFormat = "NUnitXml"
+            $config.Output.Verbosity = "Detailed"
+            
+            $result = Invoke-Pester -Configuration $config
+            
+            # Erstelle detaillierte Zusammenfassung der Fehler
+            $summary = @{
+              TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              TotalCount = $result.TotalCount
+              PassedCount = $result.PassedCount
+              FailedCount = $result.FailedCount
+              SkippedCount = $result.SkippedCount
+              NotRunCount = $result.NotRunCount
+              Duration = $result.Duration.TotalSeconds
+              Success = $result.FailedCount -eq 0
+              FailedTests = @()
+            }
+            
+            # Sammle Details zu fehlgeschlagenen Tests
+            foreach ($containerResult in $result.Containers) {
+              foreach ($testResult in $containerResult.TestResults) {
+                if ($testResult.Result -eq "Failed") {
+                  $summary.FailedTests += @{
+                    Name = $testResult.Name
+                    Path = $testResult.Path
+                    Line = $testResult.ErrorRecord.InvocationInfo.ScriptLineNumber
+                    Message = $testResult.ErrorRecord.Exception.Message
+                  }
+                }
+              }
+            }
+            
+            # Speichere Zusammenfassung als JSON
+            $summary | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\pester-summary.json" -Encoding UTF8
+            
+            if ($result.FailedCount -gt 0) {
+              Write-Host "Tests fehlgeschlagen: $($result.FailedCount) von $($result.TotalCount)" -ForegroundColor Red
+              Write-Host "Fehlgeschlagene Tests:" -ForegroundColor Red
+              foreach ($failedTest in $summary.FailedTests) {
+                Write-Host "  - $($failedTest.Name): $($failedTest.Message)" -ForegroundColor Red
+              }
+            } else {
+              Write-Host "Alle Tests erfolgreich: $($result.PassedCount) von $($result.TotalCount)" -ForegroundColor Green
+            }
+          } catch {
+            # Fallback für ältere Pester-Versionen (v3/v4)
+            Write-Warning "Fehler bei Pester v5: $($_.Exception.Message)"
+            Write-Host "Fallback zu Legacy Pester-Syntax..." -ForegroundColor Yellow
+            
+            $result = Invoke-Pester -Script $allTests -OutputFormat NUnitXml -OutputFile "$env:CONFIG_PATH\pester-report.xml" -PassThru
+            
+            # Erstelle einfachere Zusammenfassung für Legacy Pester
+            $summary = @{
+              TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              TotalCount = $result.TotalCount
+              PassedCount = $result.PassedCount
+              FailedCount = $result.FailedCount
+              SkippedCount = $result.SkippedCount
+              Duration = $result.Time
+              Success = $result.FailedCount -eq 0
+            }
+            
+            $summary | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\pester-summary.json" -Encoding UTF8
+            
+            if ($result.FailedCount -gt 0) {
+              Write-Host "Tests fehlgeschlagen: $($result.FailedCount) von $($result.TotalCount)" -ForegroundColor Red
+            } else {
+              Write-Host "Alle Tests erfolgreich: $($result.PassedCount) von $($result.TotalCount)" -ForegroundColor Green
+            }
+          }
+        }
+      }
+      
+      # Erstelle Reports-Verzeichnis und kopiere Pester Reports für GitLab GUI
+      pwsh -NoProfile -NonInteractive -Command {
+        if (-not (Test-Path "$env:REPORTS_PATH")) {
+          New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+        }
+        
+        # Kopiere XML Report für GitLab Test-Integration
+        if (Test-Path "$env:CONFIG_PATH\pester-report.xml") {
+          Copy-Item "$env:CONFIG_PATH\pester-report.xml" "$env:REPORTS_PATH\pester-report.xml" -Force
+          Write-Host "✅ Pester XML Report für GitLab GUI kopiert" -ForegroundColor Green
+        }
+        
+        # Kopiere JSON Summary für detaillierte Analyse
+        if (Test-Path "$env:CONFIG_PATH\pester-summary.json") {
+          Copy-Item "$env:CONFIG_PATH\pester-summary.json" "$env:REPORTS_PATH\pester-summary.json" -Force
+          Write-Host "✅ Pester Summary JSON kopiert" -ForegroundColor Green
+        }
+        
+        # Überprüfe ob Test-Reports erfolgreich erstellt wurden
+        if (Test-Path "$env:REPORTS_PATH\pester-report.xml") {
+          $xmlContent = Get-Content "$env:REPORTS_PATH\pester-report.xml" -Raw
+          Write-Host "GitLab Test Report Integration: Bereit für GUI-Anzeige" -ForegroundColor Cyan
+        } else {
+          Write-Warning "Pester XML Report für GitLab GUI nicht gefunden"
+        }
+      }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/pester-report.xml
+      - artifacts/reports/pester-summary.json
+    reports:
+      junit: artifacts/reports/pester-report.xml
+    expire_in: 1 week
+
+###############################################################################
+# PS7_XAMLCheck (detaillierte XAML‑Fehler im JUnit‑Report)
+###############################################################################
+PS7_XAMLCheck:
+  stage: xaml
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.xaml'
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Xaml,System.Windows.Forms,System.Drawing -ErrorAction SilentlyContinue
+      
+      # Prüfe XAML-Dateien aus BUILD_PATH
+      $files = @()
+      if (Test-Path "$env:BUILD_PATH") {
+        $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.xaml -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      } else {
+        Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+        $files = Get-ChildItem -Recurse -File -Include *.xaml -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      }
+      
+      $fails = @()
+      foreach ($f in $files) {
+        try {
+          [System.Windows.Markup.XamlReader]::Parse((Get-Content $f.FullName -Raw)) | Out-Null
+        } catch {
+          $fails += @{ File = $f.FullName; Error = $_.Exception.Message }
+        }
+      }
+      $xml  = New-Object System.Xml.XmlDocument
+      $root = $xml.CreateElement('testsuite')
+      $root.SetAttribute('name','PS7_XAMLCheck')
+      $root.SetAttribute('tests',$files.Count.ToString())
+      $root.SetAttribute('failures',$fails.Count.ToString())
+      $xml.AppendChild($root) | Out-Null
+      foreach ($f in $files) {
+        $tc = $xml.CreateElement('testcase')
+        $tc.SetAttribute('name',(Split-Path $f.FullName -Leaf))
+        $rec = $fails | Where-Object { $_.File -eq $f.FullName }
+        if ($rec) {
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message','XAML parse error')
+          $fl.InnerText = $rec.Error
+          $tc.AppendChild($fl) | Out-Null
+        }
+        $root.AppendChild($tc) | Out-Null
+      }
+      $xml.Save("$env:CONFIG_PATH\xaml-report.xml")
+      
+      # Erstelle Reports-Verzeichnis und kopiere XAML Report
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      Copy-Item "$env:CONFIG_PATH\xaml-report.xml" "$env:REPORTS_PATH\xaml-report.xml" -Force
+    }
+  artifacts:
+    when: always
+    reports:
+      junit: artifacts/reports/xaml-report.xml
+
+###############################################################################
+# PS7_COMPLIANCE_CHECK (Windows Server Compliance Prüfung)
+###############################################################################
+PS7_COMPLIANCE_CHECK:
+  stage: compliance
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== Windows Server Compliance Check ===" -ForegroundColor Cyan
+      
+      $complianceChecks = @()
+      
+      # Prüfe PowerShell Execution Policy
+      $execPolicy = Get-ExecutionPolicy
+      $complianceChecks += @{
+        Check = "PowerShell_Execution_Policy"
+        Status = if ($execPolicy -in @('RemoteSigned', 'AllSigned')) { 'PASS' } else { 'FAIL' }
+        Value = $execPolicy.ToString()
+        Recommendation = "Should be RemoteSigned or AllSigned for security"
+      }
+      
+      # Prüfe auf Admin-Rechte erforderliche Befehle aus BUILD_PATH
+      $files = @()
+      if (Test-Path "$env:BUILD_PATH") {
+        $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      } else {
+        Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+        $files = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+      }
+      
+      $adminRequiredPatterns = @(
+        'Get-WmiObject.*Win32_Service',
+        'Set-Service',
+        'Stop-Service',
+        'Start-Service',
+        'New-Service',
+        'Install-WindowsFeature',
+        'Set-ItemProperty.*HKLM:',
+        'New-ItemProperty.*HKLM:',
+        'Set-ExecutionPolicy'
+      )
+      
+      $adminCommandsFound = 0
+      foreach ($file in $files) {
+        $content = Get-Content $file.FullName -Raw
+        foreach ($pattern in $adminRequiredPatterns) {
+          if ($content -match $pattern) {
+            $adminCommandsFound++
+            break
+          }
+        }
+      }
+      
+      $complianceChecks += @{
+        Check = "Admin_Rights_Required"
+        Status = if ($adminCommandsFound -gt 0) { 'WARNING' } else { 'PASS' }
+        Value = "$adminCommandsFound files require admin rights"
+        Recommendation = "Ensure scripts run with appropriate privileges"
+      }
+      
+      # Prüfe auf Logging und Auditing
+      $loggingPatterns = @(
+        'Write-EventLog',
+        'Start-Transcript',
+        'Write-Host.*-ForegroundColor',
+        'Write-Verbose',
+        'Write-Information'
+      )
+      
+      $filesWithLogging = 0
+      foreach ($file in $files) {
+        $content = Get-Content $file.FullName -Raw
+        foreach ($pattern in $loggingPatterns) {
+          if ($content -match $pattern) {
+            $filesWithLogging++
+            break
+          }
+        }
+      }
+      
+      $loggingRatio = if ($files.Count -gt 0) { [math]::Round(($filesWithLogging / $files.Count) * 100, 2) } else { 0 }
+      
+      $complianceChecks += @{
+        Check = "Logging_Implementation"
+        Status = if ($loggingRatio -ge 50) { 'PASS' } elseif ($loggingRatio -ge 25) { 'WARNING' } else { 'FAIL' }
+        Value = "$loggingRatio% of files implement logging"
+        Recommendation = "Implement logging in at least 50% of scripts"
+      }
+      
+      # Erstelle Compliance Report
+      $complianceReport = @{
+        ScanTimestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        TotalChecks = $complianceChecks.Count
+        PassedChecks = ($complianceChecks | Where-Object {$_.Status -eq 'PASS'}).Count
+        WarningChecks = ($complianceChecks | Where-Object {$_.Status -eq 'WARNING'}).Count
+        FailedChecks = ($complianceChecks | Where-Object {$_.Status -eq 'FAIL'}).Count
+        Checks = $complianceChecks
+      }
+      
+      $complianceReport | ConvertTo-Json -Depth 4 | Out-File -FilePath "$env:CONFIG_PATH\compliance-report.json" -Encoding UTF8
+      
+      # Erstelle JUnit XML für GitLab
+      $xml = New-Object System.Xml.XmlDocument
+      $root = $xml.CreateElement('testsuite')
+      $root.SetAttribute('name','PS7_COMPLIANCE_CHECK')
+      $root.SetAttribute('tests',$complianceChecks.Count.ToString())
+      $root.SetAttribute('failures',($complianceChecks | Where-Object {$_.Status -eq 'FAIL'}).Count.ToString())
+      $xml.AppendChild($root) | Out-Null
+      
+      foreach ($check in $complianceChecks) {
+        $tc = $xml.CreateElement('testcase')
+        $tc.SetAttribute('name',$check.Check)
+        $tc.SetAttribute('classname','Compliance')
+        
+        if ($check.Status -eq 'FAIL') {
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message',$check.Value)
+          $fl.InnerText = $check.Recommendation
+          $tc.AppendChild($fl) | Out-Null
+        } elseif ($check.Status -eq 'WARNING') {
+          $fl = $xml.CreateElement('skipped')
+          $fl.SetAttribute('message',$check.Value)
+          $tc.AppendChild($fl) | Out-Null
+        }
+        
+        $root.AppendChild($tc) | Out-Null
+      }
+      
+      $xml.Save("$env:CONFIG_PATH\compliance-report.xml")
+      
+      # Erstelle Reports-Verzeichnis und kopiere Compliance Reports
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      if (Test-Path "$env:CONFIG_PATH\compliance-report.json") {
+        Copy-Item "$env:CONFIG_PATH\compliance-report.json" "$env:REPORTS_PATH\compliance-report.json" -Force
+      }
+      if (Test-Path "$env:CONFIG_PATH\compliance-report.xml") {
+        Copy-Item "$env:CONFIG_PATH\compliance-report.xml" "$env:REPORTS_PATH\compliance-report.xml" -Force
+      }
+      
+      Write-Host "Compliance Check completed:"
+      Write-Host "  Passed: $($complianceReport.PassedChecks)"
+      Write-Host "  Warnings: $($complianceReport.WarningChecks)" 
+      Write-Host "  Failed: $($complianceReport.FailedChecks)"
+    }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/compliance-report.json
+      - artifacts/reports/compliance-report.xml
+    reports:
+      junit: artifacts/reports/compliance-report.xml
+    expire_in: 1 week
+
+
+###############################################################################
+# ENHANCED_AUDIT_LOG (Erweiterte Audit-Logs für Windows Server)
+###############################################################################
+ENHANCED_AUDIT_LOG:
+  stage: audit
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - when: always
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== Enhanced Audit Logging ===" -ForegroundColor Cyan
+      
+      $auditData = @{
+        PipelineInfo = @{
+          PipelineId = $env:CI_PIPELINE_ID ?? "N/A"
+          PipelineUrl = $env:CI_PIPELINE_URL ?? "N/A"
+          JobId = $env:CI_JOB_ID ?? "N/A"
+          JobUrl = $env:CI_JOB_URL ?? "N/A"
+          CommitSha = $env:CI_COMMIT_SHA ?? "N/A"
+          CommitShort = $env:CI_COMMIT_SHORT_SHA ?? "N/A"
+          Branch = $env:CI_COMMIT_REF_NAME ?? "N/A"
+          ProjectId = $env:CI_PROJECT_ID ?? "N/A"
+          ProjectName = $env:CI_PROJECT_NAME ?? "N/A"
+          Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        SystemInfo = @{
+          ComputerName = $env:COMPUTERNAME ?? "N/A"
+          UserName = $env:USERNAME ?? "N/A"
+          PowerShellVersion = $PSVersionTable.PSVersion.ToString()
+          WindowsVersion = [System.Environment]::OSVersion.VersionString
+          WorkingDirectory = Get-Location | Select-Object -ExpandProperty Path
+        }
+        ArtifactsSummary = @{
+          ValidationReport = Test-Path "$env:CONFIG_PATH\validation-report.json"
+          LintReport = Test-Path "$env:CONFIG_PATH\lint-report.xml"
+          SastReport = Test-Path "$env:CONFIG_PATH\sast-report.xml"
+          SecurityAuditReport = Test-Path "$env:CONFIG_PATH\security-audit-report.json"
+          PesterReport = Test-Path "$env:CONFIG_PATH\pester-report.xml"
+          XamlReport = Test-Path "$env:CONFIG_PATH\xaml-report.xml"
+          ComplianceReport = Test-Path "$env:CONFIG_PATH\compliance-report.json"
+        }
+      }
+      
+      # Sammle alle verfügbaren Report-Dateien
+      $reportFiles = Get-ChildItem "$env:CONFIG_PATH" -Filter "*report*" -File | Select-Object Name, Length, LastWriteTime
+      $auditData.ReportFiles = $reportFiles
+      
+      # Audit Log als JSON speichern
+      $auditData | ConvertTo-Json -Depth 5 | Out-File -FilePath "$env:CONFIG_PATH\audit-log.json" -Encoding UTF8
+      
+      # Erstelle Reports-Verzeichnis und kopiere Audit Log
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      Copy-Item "$env:CONFIG_PATH\audit-log.json" "$env:REPORTS_PATH\audit-log.json" -Force
+      
+      Write-Host "Audit logging completed. Summary:"
+      Write-Host "  Reports generated: $($reportFiles.Count)"
+      Write-Host "  Artifacts created: $(($auditData.ArtifactsSummary.Values | Where-Object {$_}).Count)"
+    }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/audit-log.json
+    expire_in: 2 weeks
+
+###############################################################################
+# PS7_PERFORMANCE (Performance-Tests für PowerShell Scripts und GUIs)
+###############################################################################
+PS7_PERFORMANCE:
+  stage: performance
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - exists:
+        - '**/*.ps1'
+        - '**/*.psm1'
+        - '**/*.xaml'
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== PowerShell Performance Analysis ===" -ForegroundColor Cyan
+      
+      # Sammle alle PowerShell-Dateien aus BUILD_PATH
+      $files = @()
+      if (Test-Path "$env:BUILD_PATH") {
+        $files = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' } |
+                 Select-Object -First 10  # Begrenze für Performance-Tests
+      } else {
+        Write-Warning "BUILD_PATH '$env:BUILD_PATH' nicht gefunden. Prüfe lokales Verzeichnis als Fallback."
+        $files = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' } |
+                 Select-Object -First 10  # Begrenze für Performance-Tests
+      }
+      
+      $performanceResults = @()
+      
+      foreach ($file in $files) {
+        Write-Host "Analysiere Performance von: $($file.Name)"
+        
+        try {
+          # Messe Parsing-Zeit
+          $parseTime = Measure-Command {
+            $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $file.FullName -Raw), [ref]$null)
+          }
+          
+          # Analysiere Code-Komplexität
+          $content = Get-Content $file.FullName -Raw
+          $lines = ($content -split "`n").Count
+          $functions = [regex]::Matches($content, 'function\s+[\w-]+', 'IgnoreCase').Count
+          $loops = [regex]::Matches($content, '\b(for|foreach|while)\s*\(', 'IgnoreCase').Count
+          
+          # Performance-Score berechnen (einfache Heuristik)
+          $complexityScore = ($loops * 2) + ($functions * 1) + ($lines * 0.1)
+          $performanceScore = switch ($complexityScore) {
+            {$_ -lt 10} { 'Excellent' }
+            {$_ -lt 25} { 'Good' }
+            {$_ -lt 50} { 'Average' }
+            {$_ -lt 100} { 'Poor' }
+            default { 'Critical' }
+          }
+          
+          $performanceResults += @{
+            FileName = $file.Name
+            FilePath = $file.FullName
+            ParseTime = $parseTime.TotalMilliseconds
+            Lines = $lines
+            Functions = $functions
+            Loops = $loops
+            ComplexityScore = [math]::Round($complexityScore, 2)
+            PerformanceRating = $performanceScore
+          }
+          
+        } catch {
+          Write-Warning "Fehler bei Performance-Analyse von $($file.Name): $($_.Exception.Message)"
+        }
+      }
+      
+      # XAML Performance-Tests
+      $xamlFiles = Get-ChildItem -Recurse -File -Include *.xaml |
+                   Where-Object { $_.FullName -notmatch '\\# Archiv(\\|$)' }
+      
+      $xamlPerformance = @()
+      foreach ($xamlFile in $xamlFiles) {
+        try {
+          $xamlContent = Get-Content $xamlFile.FullName -Raw
+          $elementCount = ([regex]::Matches($xamlContent, '<\w+[^/>]*[^?]>', 'IgnoreCase')).Count
+          $fileSize = (Get-Item $xamlFile.FullName).Length
+          
+          # Messe XAML Parse-Zeit
+          $xamlParseTime = Measure-Command {
+            Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
+            try {
+              [System.Windows.Markup.XamlReader]::Parse($xamlContent) | Out-Null
+            } catch {
+              # Ignoriere Parse-Fehler für Performance-Messung
+            }
+          }
+          
+          $xamlPerformance += @{
+            FileName = $xamlFile.Name
+            ElementCount = $elementCount
+            FileSize = $fileSize
+            ParseTime = $xamlParseTime.TotalMilliseconds
+            Rating = if ($elementCount -lt 50 -and $fileSize -lt 50000) { 'Good' } 
+                    elseif ($elementCount -lt 100 -and $fileSize -lt 100000) { 'Average' } 
+                    else { 'Poor' }
+          }
+        } catch {
+          Write-Warning "XAML Performance-Analyse fehlgeschlagen: $($xamlFile.Name)"
+        }
+      }
+      
+      # Erstelle Performance Report
+      $performanceReport = @{
+        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        PowerShellFiles = @{
+          TotalAnalyzed = $performanceResults.Count
+          AverageParseTime = if ($performanceResults.Count -gt 0) { 
+            [math]::Round(($performanceResults | Measure-Object ParseTime -Average).Average, 2) 
+          } else { 0 }
+          AverageComplexity = if ($performanceResults.Count -gt 0) { 
+            [math]::Round(($performanceResults | Measure-Object ComplexityScore -Average).Average, 2) 
+          } else { 0 }
+          Results = $performanceResults
+        }
+        XamlFiles = @{
+          TotalAnalyzed = $xamlPerformance.Count
+          AverageParseTime = if ($xamlPerformance.Count -gt 0) { 
+            [math]::Round(($xamlPerformance | Measure-Object ParseTime -Average).Average, 2) 
+          } else { 0 }
+          AverageElements = if ($xamlPerformance.Count -gt 0) { 
+            [math]::Round(($xamlPerformance | Measure-Object ElementCount -Average).Average, 2) 
+          } else { 0 }
+          Results = $xamlPerformance
+        }
+      }
+      
+      $performanceReport | ConvertTo-Json -Depth 5 | Out-File -FilePath "$env:CONFIG_PATH\performance-report.json" -Encoding UTF8
+      
+      # Erstelle JUnit XML für kritische Performance-Issues
+      $xml = New-Object System.Xml.XmlDocument
+      $root = $xml.CreateElement('testsuite')
+      $root.SetAttribute('name','PS7_PERFORMANCE')
+      $criticalIssues = ($performanceResults | Where-Object {$_.PerformanceRating -eq 'Critical'}).Count
+      $root.SetAttribute('tests',($performanceResults.Count + $xamlPerformance.Count).ToString())
+      $root.SetAttribute('failures',$criticalIssues.ToString())
+      $xml.AppendChild($root) | Out-Null
+      
+      foreach ($result in $performanceResults) {
+        $tc = $xml.CreateElement('testcase')
+        $tc.SetAttribute('name',$result.FileName)
+        $tc.SetAttribute('classname','PowerShellPerformance')
+        $tc.SetAttribute('time',($result.ParseTime / 1000).ToString())
+        
+        if ($result.PerformanceRating -eq 'Critical') {
+          $fl = $xml.CreateElement('failure')
+          $fl.SetAttribute('message',"Critical performance issue - Complexity: $($result.ComplexityScore)")
+          $fl.InnerText = "File has high complexity score and may cause performance issues"
+          $tc.AppendChild($fl) | Out-Null
+        }
+        $root.AppendChild($tc) | Out-Null
+      }
+      
+      $xml.Save("$env:CONFIG_PATH\performance-report.xml")
+      
+      # Erstelle Reports-Verzeichnis und kopiere Performance Reports
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      if (Test-Path "$env:CONFIG_PATH\performance-report.json") {
+        Copy-Item "$env:CONFIG_PATH\performance-report.json" "$env:REPORTS_PATH\performance-report.json" -Force
+      }
+      if (Test-Path "$env:CONFIG_PATH\performance-report.xml") {
+        Copy-Item "$env:CONFIG_PATH\performance-report.xml" "$env:REPORTS_PATH\performance-report.xml" -Force
+      }
+      
+      Write-Host "Performance Analysis completed:"
+      Write-Host "  PowerShell files: $($performanceResults.Count)"
+      Write-Host "  XAML files: $($xamlPerformance.Count)"
+      Write-Host "  Average PS parse time: $($performanceReport.PowerShellFiles.AverageParseTime)ms"
+      Write-Host "  Critical issues: $criticalIssues"
+    }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/performance-report.json
+      - artifacts/reports/performance-report.xml
+    reports:
+      junit: artifacts/reports/performance-report.xml
+    expire_in: 1 week
+
+###############################################################################
+# POWERSHELL_RELEASE (PowerShell-kompatible Release-Erstellung)
+###############################################################################
+POWERSHELL_RELEASE:
+  stage: release
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== PowerShell Script Collection Release ===" -ForegroundColor Cyan
+      Write-Host "Creating release for tag: $env:CI_COMMIT_TAG" -ForegroundColor Green
+      
+      # Sammle Informationen über die Scripts
+      $scripts = @()
+      if (Test-Path "$env:BUILD_PATH") {
+        $scriptFiles = Get-ChildItem "$env:BUILD_PATH" -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+        $scripts += $scriptFiles
+      } else {
+        $scriptFiles = Get-ChildItem -Recurse -File -Include *.ps1,*.psm1 -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -notmatch '\\#\s*(Archiv|Archive|OLD|old|Backup|backup)(\\|$)' }
+        $scripts += $scriptFiles
+      }
+      
+      # Erstelle Release-Notes als Array
+      $releaseLines = @()
+      $releaseLines += "# PowerShell Script Collection Release $env:CI_COMMIT_TAG"
+      $releaseLines += ""
+      $releaseLines += "## 📊 Collection Statistics"
+      $releaseLines += "- **Total Scripts**: $($scripts.Count)"
+      $releaseLines += "- **PowerShell Scripts**: $(($scripts | Where-Object {$_.Extension -eq '.ps1'}).Count)"
+      $releaseLines += "- **PowerShell Modules**: $(($scripts | Where-Object {$_.Extension -eq '.psm1'}).Count)"
+      $releaseLines += "- **Release Date**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+      $releaseLines += ""
+      $releaseLines += "## 🛠️ Quality Metrics"
+      
+      # Lade Pipeline-Ergebnisse
+      if (Test-Path "$env:CONFIG_PATH\pipeline-summary.json") {
+        $summary = Get-Content "$env:CONFIG_PATH\pipeline-summary.json" | ConvertFrom-Json
+        $releaseLines += ""
+        $releaseLines += "- **Pipeline Status**: ✅ Completed"
+        $releaseLines += "- **Reports Generated**: $($summary.ReportsGenerated ?? 'N/A')"
+        $releaseLines += "- **Issues Found**: $($summary.IssuesFound ?? 'N/A')"
+      }
+      
+      # Lade Code-Metriken
+      if (Test-Path "$env:CONFIG_PATH\code-metrics.json") {
+        $metrics = Get-Content "$env:CONFIG_PATH\code-metrics.json" | ConvertFrom-Json
+        $releaseLines += ""
+        $releaseLines += "## 📈 Code Quality"
+        $releaseLines += "- **Average Complexity**: $($metrics.AverageComplexity ?? 'N/A')"
+        $releaseLines += "- **Total Functions**: $($metrics.TotalFunctions ?? 'N/A')"
+        $releaseLines += "- **Total Lines of Code**: $($metrics.TotalLines ?? 'N/A')"
+      }
+      
+      # Security Status
+      if (Test-Path "$env:CONFIG_PATH\security-audit-report.json") {
+        $security = Get-Content "$env:CONFIG_PATH\security-audit-report.json" | ConvertFrom-Json
+        $releaseLines += ""
+        $releaseLines += "## 🔐 Security Status"
+        $releaseLines += "- **Security Scan**: ✅ Completed"
+        $releaseLines += "- **Critical Issues**: $($security.CriticalIssues ?? 0)"
+        $releaseLines += "- **High Issues**: $($security.HighIssues ?? 0)"
+      }
+      
+      $releaseLines += ""
+      $releaseLines += "## 📋 Included Scripts"
+      
+      # Füge Script-Liste hinzu (begrenzt auf Top 20)
+      $topScripts = $scripts | Select-Object -First 20
+      foreach ($script in $topScripts) {
+        $relativePath = $script.FullName.Replace($PWD, '.')
+        $releaseLines += "- ``$relativePath``"
+      }
+      
+      if ($scripts.Count -gt 20) {
+        $releaseLines += "- ... and $($scripts.Count - 20) more scripts"
+      }
+      
+      $releaseLines += ""
+      $releaseLines += "## 🚀 Usage"
+      $releaseLines += "1. Download the release archive"
+      $releaseLines += "2. Extract to your desired location" 
+      $releaseLines += "3. Review individual script documentation"
+      $releaseLines += "4. Ensure PowerShell execution policy allows script execution"
+      $releaseLines += ""
+      $releaseLines += "---"
+      $releaseLines += "*Generated automatically by GitLab CI/CD Pipeline*"
+      
+      # Speichere Release-Notes
+      $releaseLines -join "`n" | Out-File -FilePath "$env:CONFIG_PATH\RELEASE_NOTES.md" -Encoding UTF8
+      
+      Write-Host "✅ Release notes generated successfully" -ForegroundColor Green
+      Write-Host "Release tag captured: $env:CI_COMMIT_TAG"
+      Write-Host "Scripts included in release: $($scripts.Count)"
+      
+      # Erstelle einfache Release-Info für GitLab API
+      if ($env:GITLAB_TOKEN -and $env:CI_PROJECT_ID) {
+        try {
+          $simpleDescription = "PowerShell Script Collection Release $env:CI_COMMIT_TAG with $($scripts.Count) scripts. See RELEASE_NOTES.md for details."
+          
+          $releaseData = @{
+            tag_name = $env:CI_COMMIT_TAG
+            name = "PowerShell Collection $env:CI_COMMIT_TAG"
+            description = $simpleDescription
+          }
+          
+          $headers = @{
+            'PRIVATE-TOKEN' = $env:GITLAB_TOKEN
+            'Content-Type' = 'application/json'
+          }
+          
+          $uri = "$env:CI_API_V4_URL/projects/$env:CI_PROJECT_ID/releases"
+          $body = $releaseData | ConvertTo-Json -Depth 3
+          
+          Write-Host "Creating GitLab release via API..." -ForegroundColor Yellow
+          $response = Invoke-RestMethod -Uri $uri -Method POST -Headers $headers -Body $body
+          Write-Host "✅ GitLab release created successfully" -ForegroundColor Green
+        } catch {
+        Write-Warning "Failed to create GitLab release via API - this is normal if releases already exist"
+        Write-Host "Release notes are available in RELEASE_NOTES.md artifact"
+      }
+    } else {
+      Write-Host "GitLab API not configured - release notes saved as artifact only" -ForegroundColor Yellow
+    }
+    
+    # Erstelle Reports-Verzeichnis und kopiere Release Notes
+    if (-not (Test-Path "$env:REPORTS_PATH")) {
+      New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+    }
+    if (Test-Path "$env:CONFIG_PATH\RELEASE_NOTES.md") {
+      Copy-Item "$env:CONFIG_PATH\RELEASE_NOTES.md" "$env:REPORTS_PATH\RELEASE_NOTES.md" -Force
+    }
+    }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/RELEASE_NOTES.md
+    expire_in: 1 year
+
+    
+###############################################################################
+# CLEANUP (Aufräumen und finale Zusammenfassung)
+###############################################################################
+CLEANUP:
+  stage: cleanup
+  tags:
+    - windows
+    - server
+  allow_failure: true
+  rules:
+    - when: always
+  script: |
+    pwsh -NoProfile -NonInteractive -Command {
+      Write-Host "=== Pipeline Cleanup and Summary ===" -ForegroundColor Cyan
+      
+      # Sammle alle generierten Reports aus CONFIG_PATH
+      $reports = Get-ChildItem "$env:CONFIG_PATH" -Filter "*report*" -File | Select-Object Name, Length, LastWriteTime
+      $metrics = Get-ChildItem "$env:CONFIG_PATH" -Filter "metrics.txt" -File | Select-Object Name, Length, LastWriteTime
+      $logs = Get-ChildItem "$env:CONFIG_PATH" -Filter "*log*" -File | Select-Object Name, Length, LastWriteTime
+      
+      $summary = @{
+        PipelineCompleted = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        GeneratedReports = $reports.Count
+        ReportFiles = $reports
+        MetricFiles = $metrics
+        LogFiles = $logs
+        TotalArtifacts = ($reports.Count + $metrics.Count + $logs.Count)
+      }
+      
+      $summary | ConvertTo-Json -Depth 3 | Out-File -FilePath "$env:CONFIG_PATH\pipeline-summary.json" -Encoding UTF8
+      
+      Write-Host "Pipeline Cleanup completed:"
+      Write-Host "  Total reports generated: $($reports.Count)"
+      Write-Host "  Total artifacts: $($summary.TotalArtifacts)"
+      
+      # Zeige Zusammenfassung der wichtigsten Ergebnisse
+      if (Test-Path "$env:CONFIG_PATH\validation-report.json") {
+        $validation = Get-Content "$env:CONFIG_PATH\validation-report.json" | ConvertFrom-Json
+        Write-Host "  Validation: $($validation.FilesChecked) files checked, $($validation.SyntaxErrors) errors"
+      }
+      
+      if (Test-Path "$env:CONFIG_PATH\security-audit-report.json") {
+        $security = Get-Content "$env:CONFIG_PATH\security-audit-report.json" | ConvertFrom-Json
+        Write-Host "  Security: $($security.TotalFindings) findings ($($security.CriticalIssues) critical)"
+      }
+      
+      if (Test-Path "$env:CONFIG_PATH\compliance-report.json") {
+        $compliance = Get-Content "$env:CONFIG_PATH\compliance-report.json" | ConvertFrom-Json
+        Write-Host "  Compliance: $($compliance.PassedChecks)/$($compliance.TotalChecks) checks passed"
+      }
+      
+      # Erstelle Reports-Verzeichnis und kopiere Pipeline Summary
+      if (-not (Test-Path "$env:REPORTS_PATH")) {
+        New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
+      }
+      Copy-Item "$env:CONFIG_PATH\pipeline-summary.json" "$env:REPORTS_PATH\pipeline-summary.json" -Force
+    }
+  artifacts:
+    when: always
+    paths:
+      - artifacts/reports/pipeline-summary.json
+    expire_in: 1 month

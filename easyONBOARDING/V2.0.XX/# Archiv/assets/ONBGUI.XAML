@@ -1,0 +1,1275 @@
+﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="easyONBOARDING - Neuer Benutzer" 
+        Height="900" Width="1400" 
+        MinWidth="1200" MinHeight="800" 
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F5F5"
+        d:DesignHeight="900" d:DesignWidth="1400">
+
+    <Window.Resources>
+        <!-- Standalone Styles ohne externe Abhängigkeiten -->
+
+        <!-- Farben -->
+        <SolidColorBrush x:Key="PrimaryBrush" Color="#0078D4"/>
+        <SolidColorBrush x:Key="PrimaryHoverBrush" Color="#106EBE"/>
+        <SolidColorBrush x:Key="SuccessBrush" Color="#4CAF50"/>
+        <SolidColorBrush x:Key="WarningBrush" Color="#FF9800"/>
+        <SolidColorBrush x:Key="DangerBrush" Color="#F44336"/>
+        <SolidColorBrush x:Key="LightGrayBrush" Color="#F5F5F5"/>
+        <SolidColorBrush x:Key="MediumGrayBrush" Color="#E0E0E0"/>
+        <SolidColorBrush x:Key="DarkGrayBrush" Color="#9E9E9E"/>
+        <SolidColorBrush x:Key="TextBrush" Color="#333333"/>
+        <SolidColorBrush x:Key="WhiteBrush" Color="White"/>
+
+        <!-- Button Style -->
+        <Style x:Key="ModernButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" 
+                                Background="{TemplateBinding Background}" 
+                                CornerRadius="4">
+                            <ContentPresenter Margin="{TemplateBinding Padding}" 
+                                            HorizontalAlignment="Center" 
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource PrimaryHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#005A9E"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.6"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Navigation Button Style -->
+        <Style x:Key="NavButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" 
+                                Background="{TemplateBinding Background}" 
+                                CornerRadius="4">
+                            <ContentPresenter Margin="{TemplateBinding Padding}" 
+                                            HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" 
+                                            VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource LightGrayBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="FontWeight" Value="Bold"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="border" Property="Background" Value="{StaticResource PrimaryBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TextBox Style -->
+        <Style TargetType="TextBox">
+            <Setter Property="BorderBrush" Value="{StaticResource MediumGrayBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}" 
+                                CornerRadius="3">
+                            <ScrollViewer x:Name="PART_ContentHost" 
+                                        Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="True">
+                                <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+                                <Setter Property="BorderThickness" Value="2"/>
+                            </Trigger>
+                            <Trigger Property="IsReadOnly" Value="True">
+                                <Setter Property="Background" Value="{StaticResource LightGrayBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ComboBox Style -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Padding" Value="8"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="BorderBrush" Value="{StaticResource MediumGrayBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <!-- Card Style -->
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="{StaticResource MediumGrayBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="20"/>
+            <Setter Property="Margin" Value="5"/>
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect Color="LightGray" Direction="270" ShadowDepth="2" BlurRadius="6" Opacity="0.2"/>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Section Header Style -->
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="Margin" Value="0,15,0,10"/>
+        </Style>
+
+        <!-- Badge Styles -->
+        <Style x:Key="Badge" TargetType="Border">
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+        </Style>
+
+        <Style x:Key="SuccessBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+            <Setter Property="Background" Value="#E8F5E8"/>
+            <Setter Property="BorderBrush" Value="{StaticResource SuccessBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <Style x:Key="WarningBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+            <Setter Property="Background" Value="#FFF3E0"/>
+            <Setter Property="BorderBrush" Value="{StaticResource WarningBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+
+        <Style x:Key="InfoBadge" TargetType="Border" BasedOn="{StaticResource Badge}">
+            <Setter Property="Background" Value="#E3F2FD"/>
+            <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="70"/>
+            <RowDefinition Height="4"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Background="{StaticResource PrimaryBrush}">
+            <Border.Effect>
+                <DropShadowEffect Color="Black" Direction="270" ShadowDepth="2" BlurRadius="6" Opacity="0.2"/>
+            </Border.Effect>
+            <Grid Margin="20,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Logo/Title -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="40" Height="40" Background="White" CornerRadius="20" Margin="0,0,15,0">
+                        <TextBlock Text="👤" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="easyONBOARDING" FontSize="22" FontWeight="Bold" Foreground="White"/>
+                        <TextBlock Text="Neuer Benutzer anlegen" FontSize="12" Foreground="#E0E0E0"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Progress Indicator -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Border x:Name="stepIndicator1" Width="30" Height="30" Background="White" CornerRadius="15" Margin="5">
+                        <TextBlock Text="1" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <Rectangle Width="20" Height="2" Fill="White" VerticalAlignment="Center"/>
+                    <Border x:Name="stepIndicator2" Width="30" Height="30" Background="#80FFFFFF" CornerRadius="15" Margin="5">
+                        <TextBlock Text="2" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <Rectangle Width="20" Height="2" Fill="#80FFFFFF" VerticalAlignment="Center"/>
+                    <TextBlock Text="..." FontSize="14" Foreground="White" VerticalAlignment="Center" Margin="10,0"/>
+                    <Rectangle Width="20" Height="2" Fill="#80FFFFFF" VerticalAlignment="Center"/>
+                    <Border x:Name="stepIndicator6" Width="30" Height="30" Background="#80FFFFFF" CornerRadius="15" Margin="5">
+                        <TextBlock Text="6" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <Rectangle Width="20" Height="2" Fill="#80FFFFFF" VerticalAlignment="Center"/>
+                    <Border x:Name="stepIndicator7" Width="30" Height="30" Background="#80FFFFFF" CornerRadius="15" Margin="5">
+                        <TextBlock Text="7" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </StackPanel>
+                
+                <!-- Action Buttons -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="btnHelp" Content="?" Background="Transparent" BorderBrush="White" BorderThickness="1" 
+                            Foreground="White" Width="30" Height="30" FontWeight="Bold" Margin="5" ToolTip="Hilfe"/>
+                    <Button x:Name="btnSettings" Content="⚙" Background="Transparent" BorderBrush="White" BorderThickness="1" 
+                            Foreground="White" Width="30" Height="30" FontWeight="Bold" Margin="5" ToolTip="Einstellungen"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Progress Bar -->
+        <ProgressBar Grid.Row="1" x:Name="mainProgressBar" Minimum="0" Maximum="7" Value="1" 
+                     Background="{StaticResource LightGrayBrush}" Foreground="{StaticResource SuccessBrush}" BorderThickness="0"/>
+
+        <!-- Main Content -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Navigation Sidebar -->
+            <Border Grid.Column="0" Background="White" BorderBrush="{StaticResource MediumGrayBrush}" BorderThickness="0,0,1,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10,15">
+                        <!-- Navigation Header -->
+                        <TextBlock Text="Onboarding-Schritte" FontWeight="Bold" FontSize="14" 
+                                   Foreground="{StaticResource PrimaryBrush}" Margin="5,0,0,15"/>
+
+                        <!-- Step Navigation -->
+                        <Button x:Name="btnStep1" Style="{StaticResource NavButton}" Tag="1" IsEnabled="False">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource SuccessBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="✓" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="1. Benutzerdaten" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="btnStep2" Style="{StaticResource NavButton}" Tag="2">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource MediumGrayBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="2" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="2. Gruppen" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="btnStep3" Style="{StaticResource NavButton}" Tag="3">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource MediumGrayBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="3" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="3. Erweiterte Einstellungen" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="btnStep4" Style="{StaticResource NavButton}" Tag="4">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource MediumGrayBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="4" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="4. Microsoft 365" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        
+                        <Button x:Name="btnStep5" Style="{StaticResource NavButton}" Tag="5">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource MediumGrayBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="5" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="5. Services &amp; Applikationen" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        
+                        <Button x:Name="btnStep6" Style="{StaticResource NavButton}" Tag="6">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource MediumGrayBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="6" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="6. Weitere Services" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="btnStep7" Style="{StaticResource NavButton}" Tag="7">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="18" Height="18" Background="{StaticResource MediumGrayBrush}" CornerRadius="9" Margin="0,0,8,0">
+                                    <TextBlock Text="7" FontSize="10" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="7. Zusammenfassung" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        
+                        <!-- Progress Info -->
+                        <Border Style="{StaticResource InfoBadge}" Margin="5,20,5,0">
+                            <StackPanel>
+                                <TextBlock Text="Fortschritt" FontWeight="SemiBold" FontSize="11" Foreground="{StaticResource PrimaryBrush}"/>
+                                <TextBlock x:Name="progressText" Text="20% abgeschlossen" FontSize="10" Foreground="{StaticResource DarkGrayBrush}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Info Box -->
+                        <Border Background="#E3F2FD" BorderBrush="{StaticResource PrimaryBrush}" BorderThickness="1" 
+                                CornerRadius="4" Padding="10" Margin="5,15,5,0">
+                            <StackPanel>
+                                <TextBlock Text="💡 Hinweis" FontWeight="Bold" FontSize="11" Foreground="{StaticResource PrimaryBrush}"/>
+                                <TextBlock x:Name="infoText" Text="Der Benutzer wird nach Schritt 2 (Gruppen) erstellt. Weitere Schritte aktualisieren den Benutzer." 
+                                           FontSize="10" Foreground="{StaticResource PrimaryBrush}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- Content Area -->
+            <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Padding="10">
+                <Grid x:Name="contentGrid">
+
+                    <!-- Step 1: Benutzerdaten -->
+                    <Border x:Name="step1Panel" Style="{StaticResource Card}" Visibility="Visible">
+                        <StackPanel>
+                            <TextBlock Text="Schritt 1: Benutzerdaten" FontWeight="Bold" FontSize="18" Margin="0,0,0,20"/>
+
+                            <!-- Template Selection -->
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Vorlage laden (Optional)"/>
+                            <Border Background="{StaticResource LightGrayBrush}" CornerRadius="4" Padding="15" Margin="0,0,0,15">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="150"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Content="Profil auswählen:" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                                    <ComboBox x:Name="cmbTemplate" Grid.Column="1" ToolTip="Wählen Sie ein Profil, um die Felder vorab auszufüllen.">
+                                        <ComboBoxItem Content="Standard-Mitarbeiter"/>
+                                        <ComboBoxItem Content="Vertrieb"/>
+                                        <ComboBoxItem Content="IT-Administrator"/>
+                                        <ComboBoxItem Content="Entwickler"/>
+                                        <ComboBoxItem Content="Marketing"/>
+                                    </ComboBox>
+                                    <Button x:Name="btnLoadTemplate" Content="Vorlage laden" Grid.Column="2" Style="{StaticResource ModernButton}" Margin="10,0,0,0"/>
+                                </Grid>
+                            </Border>
+
+                            <!-- Basic Info -->
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Grundlegende Informationen"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Label Content="Vorname: *" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtFirstName" Grid.Row="0" Grid.Column="1" ToolTip="Vorname des Benutzers"/>
+
+                                <Label Content="Nachname: *" Grid.Row="0" Grid.Column="3" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtLastName" Grid.Row="0" Grid.Column="4" ToolTip="Nachname des Benutzers"/>
+
+                                <Label Content="Benutzername:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtUsername" Grid.Row="1" Grid.Column="1" ToolTip="Wird automatisch generiert" IsReadOnly="True" Background="{StaticResource LightGrayBrush}"/>
+
+                                <Label Content="E-Mail:" Grid.Row="1" Grid.Column="3" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtEmail" Grid.Row="1" Grid.Column="4" ToolTip="Wird automatisch generiert" IsReadOnly="True" Background="{StaticResource LightGrayBrush}"/>
+
+                                <Label Content="Abteilung:" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="cmbDepartment" Grid.Row="2" Grid.Column="1" IsEditable="True">
+                                    <ComboBoxItem Content="IT"/>
+                                    <ComboBoxItem Content="Vertrieb"/>
+                                    <ComboBoxItem Content="Marketing"/>
+                                    <ComboBoxItem Content="Finanzen"/>
+                                </ComboBox>
+
+                                <Label Content="Position:" Grid.Row="2" Grid.Column="3" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtPosition" Grid.Row="2" Grid.Column="4"/>
+
+                                <Label Content="Manager:" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtManager" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3"/>
+                                <Button x:Name="btnBrowseManager" Content="..." Grid.Row="3" Grid.Column="4" Width="30" Margin="5,0,0,0" ToolTip="Manager aus AD auswählen"/>
+                            </Grid>
+
+                            <!-- OU Selection -->
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Active Directory"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Label Content="OU-Pfad: *" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="cmbOUPath" Grid.Row="0" Grid.Column="1" IsEditable="True">
+                                    <ComboBoxItem Content="OU=Users,DC=company,DC=local"/>
+                                    <ComboBoxItem Content="OU=IT,OU=Users,DC=company,DC=local"/>
+                                    <ComboBoxItem Content="OU=Sales,OU=Users,DC=company,DC=local"/>
+                                </ComboBox>
+                                <Button x:Name="btnBrowseOU" Content="..." Grid.Row="0" Grid.Column="2" Width="30" Margin="5,0,0,0"/>
+
+                                <Label Content="Passwort:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
+                                <PasswordBox x:Name="pwdPassword" Grid.Row="1" Grid.Column="1"/>
+                                <Button x:Name="btnGeneratePassword" Content="🎲" Grid.Row="1" Grid.Column="2" Width="30" Margin="5,0,0,0" ToolTip="Passwort generieren"/>
+                            </Grid>
+
+                            <!-- Validation -->
+                            <Border x:Name="validationPanel1" Background="#FFEBEE" BorderBrush="{StaticResource DangerBrush}" 
+                                    BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,15,0,0" Visibility="Collapsed">
+                                <TextBlock x:Name="validationText1" Text="Bitte alle Pflichtfelder ausfüllen" 
+                                           Foreground="{StaticResource DangerBrush}" FontWeight="SemiBold"/>
+                            </Border>
+
+                            <!-- Step Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnValidateStep1" Content="Validieren" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource WarningBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnNextStep1" Content="Weiter >" Style="{StaticResource ModernButton}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Step 2: Gruppen (Benutzer wird hier erstellt!) -->
+                    <Border x:Name="step2Panel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="Schritt 2: Gruppenzuweisung" FontWeight="Bold" FontSize="18" Margin="0,0,0,20"/>
+
+                            <!-- Important Note -->
+                            <Border Background="#FFF3E0" BorderBrush="{StaticResource WarningBrush}" BorderThickness="1" 
+                                    CornerRadius="4" Padding="12" Margin="0,0,0,15">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="⚠" FontSize="16" Margin="0,0,8,0" Foreground="{StaticResource WarningBrush}"/>
+                                    <TextBlock Text="Nach diesem Schritt wird der Benutzer im Active Directory erstellt!" 
+                                               FontWeight="SemiBold" Foreground="{StaticResource WarningBrush}"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Available Groups -->
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Verfügbare Gruppen" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                    <TextBox x:Name="txtGroupSearch" Margin="0,0,0,5" ToolTip="Gruppen suchen..."/>
+                                    <ListBox x:Name="lstAvailableGroups" Height="300" SelectionMode="Extended">
+                                        <ListBoxItem Content="Domain Users"/>
+                                        <ListBoxItem Content="IT-Team"/>
+                                        <ListBoxItem Content="Vertrieb"/>
+                                        <ListBoxItem Content="Marketing"/>
+                                        <ListBoxItem Content="VPN-Benutzer"/>
+                                        <ListBoxItem Content="Office365-Benutzer"/>
+                                    </ListBox>
+                                </StackPanel>
+
+                                <!-- Move Buttons -->
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Center">
+                                    <Button x:Name="btnAddGroup" Content="&gt;" Width="50" Margin="5" ToolTip="Ausgewählte Gruppe hinzufügen"/>
+                                    <Button x:Name="btnAddAllGroups" Content="&gt;&gt;" Width="50" Margin="5" ToolTip="Alle Gruppen hinzufügen"/>
+                                    <Button x:Name="btnRemoveGroup" Content="&lt;" Width="50" Margin="5" ToolTip="Ausgewählte Gruppe entfernen"/>
+                                    <Button x:Name="btnRemoveAllGroups" Content="&lt;&lt;" Width="50" Margin="5" ToolTip="Alle Gruppen entfernen"/>
+                                </StackPanel>
+
+                                <!-- Selected Groups -->
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Zugewiesene Gruppen" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                    <Border Style="{StaticResource InfoBadge}" Margin="0,0,0,5">
+                                        <TextBlock x:Name="groupCountText" Text="0 Gruppen ausgewählt" FontSize="10"/>
+                                    </Border>
+                                    <ListBox x:Name="lstSelectedGroups" Height="300" SelectionMode="Extended"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Step Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnPrevStep2" Content="Zurück" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource DarkGrayBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnCreateUser" Content="Benutzer erstellen" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource SuccessBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Step 3: Erweiterte Einstellungen (User Update) -->
+                    <Border x:Name="step3Panel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="Schritt 3: Erweiterte Einstellungen" FontWeight="Bold" FontSize="18" Margin="0,0,0,20"/>
+
+                            <!-- User Status -->
+                            <Border Style="{StaticResource SuccessBadge}" Margin="0,0,0,15">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="✓" FontWeight="Bold" Margin="0,0,5,0"/>
+                                    <TextBlock x:Name="userStatusText" Text="Benutzer erfolgreich erstellt" FontWeight="SemiBold"/>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Kontaktinformationen"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Label Content="Telefon:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtPhone" Grid.Row="0" Grid.Column="1"/>
+
+                                <Label Content="Mobil:" Grid.Row="0" Grid.Column="3" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtMobile" Grid.Row="0" Grid.Column="4"/>
+
+                                <Label Content="Büro:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtOffice" Grid.Row="1" Grid.Column="1"/>
+
+                                <Label Content="Standort:" Grid.Row="1" Grid.Column="3" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtLocation" Grid.Row="1" Grid.Column="4"/>
+
+                                <Label Content="Beschreibung:" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBox x:Name="txtDescription" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="4"/>
+                            </Grid>
+
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Konto-Optionen"/>
+                            <StackPanel>
+                                <CheckBox x:Name="chkMustChangePassword" Content="Benutzer muss Passwort bei nächster Anmeldung ändern" Margin="5" IsChecked="True"/>
+                                <CheckBox x:Name="chkPasswordNeverExpires" Content="Passwort läuft nie ab" Margin="5"/>
+                                <CheckBox x:Name="chkCannotChangePassword" Content="Benutzer kann Passwort nicht ändern" Margin="5"/>
+                                <CheckBox x:Name="chkAccountDisabled" Content="Konto deaktiviert" Margin="5"/>
+                            </StackPanel>
+
+                            <!-- Step Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnPrevStep3" Content="Zurück" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource DarkGrayBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnUpdateUser3" Content="Benutzer aktualisieren" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource WarningBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnNextStep3" Content="Weiter >" Style="{StaticResource ModernButton}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Step 4: Microsoft 365 (User Update) -->
+                    <Border x:Name="step4Panel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="Schritt 4: Microsoft 365 Integration" FontWeight="Bold" FontSize="18" Margin="0,0,0,20"/>
+
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Microsoft 365 Lizenzierung"/>
+                            <CheckBox x:Name="chkEnableO365" Content="Microsoft 365 aktivieren" FontWeight="SemiBold" Margin="0,0,0,10"/>
+
+                            <Grid IsEnabled="{Binding IsChecked, ElementName=chkEnableO365}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Label Content="Lizenz:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="cmbO365License" Grid.Row="0" Grid.Column="1">
+                                    <ComboBoxItem Content="Microsoft 365 Business Basic"/>
+                                    <ComboBoxItem Content="Microsoft 365 Business Standard"/>
+                                    <ComboBoxItem Content="Microsoft 365 Business Premium"/>
+                                    <ComboBoxItem Content="Office 365 E3"/>
+                                    <ComboBoxItem Content="Office 365 E5"/>
+                                </ComboBox>
+
+                                <Label Content="Nutzungsstandort:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="cmbUsageLocation" Grid.Row="1" Grid.Column="1">
+                                    <ComboBoxItem Content="DE - Deutschland" IsSelected="True"/>
+                                    <ComboBoxItem Content="AT - Österreich"/>
+                                    <ComboBoxItem Content="CH - Schweiz"/>
+                                </ComboBox>
+                            </Grid>
+
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Exchange Online"/>
+                            <StackPanel IsEnabled="{Binding IsChecked, ElementName=chkEnableO365}">
+                                <CheckBox x:Name="chkCreateMailbox" Content="Exchange Postfach erstellen" Margin="5" IsChecked="True"/>
+                                <CheckBox x:Name="chkForwardingAddress" Content="E-Mail-Weiterleitung aktivieren" Margin="5"/>
+                                <Grid Margin="20,5,0,0" IsEnabled="{Binding IsChecked, ElementName=chkForwardingAddress}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Content="Weiterleitung an:" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="txtForwardingAddress" Grid.Column="1"/>
+                                </Grid>
+                            </StackPanel>
+
+                            <!-- Step Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnPrevStep4" Content="Zurück" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource DarkGrayBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnUpdateUser4" Content="Microsoft 365 konfigurieren" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource WarningBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnNextStep4" Content="Weiter zu Services >" Style="{StaticResource ModernButton}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Step 5: Services & Applikationen -->
+                    <Border x:Name="step5Panel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="Schritt 5: Services &amp; Applikationen" FontWeight="Bold" FontSize="18" Margin="0,0,0,20"/>
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Zugriff auf Unternehmensanwendungen"/>
+                            
+
+                            <TabControl Margin="0,10,0,0">
+                                <TabItem Header="ERP / CRM Systeme" x:Name="tabErpCrm">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <Button
+                                            x:Name="btnLoadErpCrm"
+                                            Width="150"
+                                            Margin="0,0,0,10"
+                                            HorizontalAlignment="Left"
+                                            Content="Systeme laden" />
+                                        <DataGrid
+                                            x:Name="dgErpCrm"
+                                            Grid.Row="1"
+                                            AutoGenerateColumns="False"
+                                            IsReadOnly="True">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn
+                                                    Width="*"
+                                                    Binding="{Binding SystemName}"
+                                                    Header="System" />
+                                                <DataGridTextColumn
+                                                    Width="*"
+                                                    Binding="{Binding Role}"
+                                                    Header="Rolle/Profil" />
+                                                <DataGridCheckBoxColumn
+                                                    Width="100"
+                                                    Binding="{Binding HasAccess}"
+                                                    Header="Zugriff" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                <TabItem Header="Entwickler-Tools" x:Name="tabDevTools">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <Button
+                                            x:Name="btnLoadDevTools"
+                                            Width="150"
+                                            Margin="0,0,0,10"
+                                            HorizontalAlignment="Left"
+                                            Content="Tools laden" />
+                                        <DataGrid
+                                            x:Name="dgDevTools"
+                                            Grid.Row="1"
+                                            AutoGenerateColumns="False"
+                                            IsReadOnly="True">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn
+                                                    Width="*"
+                                                    Binding="{Binding ToolName}"
+                                                    Header="Tool" />
+                                                <DataGridTextColumn
+                                                    Width="*"
+                                                    Binding="{Binding Role}"
+                                                    Header="Rolle/Projekt" />
+                                                <DataGridCheckBoxColumn
+                                                    Width="100"
+                                                    Binding="{Binding HasAccess}"
+                                                    Header="Zugriff" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                <TabItem Header="Weitere Systeme" x:Name="tabOtherSystems">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <Button
+                                            x:Name="btnLoadOtherSystems"
+                                            Width="150"
+                                            Margin="0,0,0,10"
+                                            HorizontalAlignment="Left"
+                                            Content="Systeme laden" />
+                                        <DataGrid
+                                            x:Name="dgOtherSystems"
+                                            Grid.Row="1"
+                                            AutoGenerateColumns="False"
+                                            IsReadOnly="True">
+                                            <DataGrid.Columns>
+                                                <DataGridTextColumn
+                                                    Width="*"
+                                                    Binding="{Binding SystemName}"
+                                                    Header="System" />
+                                                <DataGridCheckBoxColumn
+                                                    Width="100"
+                                                    Binding="{Binding HasAccess}"
+                                                    Header="Zugriff" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                            </TabControl>
+
+                            <!-- Step Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnPrevStep5" Content="&lt; Zurück" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource DarkGrayBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnUpdateUser5" Content="Services konfigurieren" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource WarningBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnNextStep5" Content="Weiter zur Zusammenfassung >" Style="{StaticResource ModernButton}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Step 6: Weitere Services -->
+                    <Border x:Name="step6Panel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="Schritt 6: Weitere Services" FontWeight="Bold" FontSize="18" Margin="0,0,0,20"/>
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Zusätzliche Zugriffsberechtigungen"/>
+
+                            <!-- Information Box -->
+                            <Border Background="#E3F2FD" BorderBrush="{StaticResource PrimaryBrush}" BorderThickness="1" 
+                                    CornerRadius="4" Padding="10" Margin="0,0,0,15">
+                                <StackPanel>
+                                    <TextBlock Text="💡 Service-Konfiguration" FontWeight="Bold" FontSize="11" Foreground="{StaticResource PrimaryBrush}"/>
+                                    <TextBlock Text="Konfigurieren Sie zusätzliche Business-Anwendungen und Systeme für den neuen Benutzer. Diese Einstellungen werden nach der Benutzererstellung angewendet." 
+                                               FontSize="10" Foreground="{StaticResource PrimaryBrush}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <TabControl Margin="0,10,0,0">
+                                <TabItem Header="Telefonie &amp; Kommunikation" x:Name="tabTelephony">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="btnLoadTelephony" Width="150" Margin="0,0,10,0" Content="Systeme laden" />
+                                            <Button x:Name="btnRefreshTelephony" Width="100" Content="Aktualisieren" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Row="1" Text="Telefon- und Kommunikationssysteme" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <DataGrid x:Name="dgTelephony" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" Height="200">
+                                            <DataGrid.Columns>
+                                                <DataGridCheckBoxColumn Width="60" Binding="{Binding HasAccess}" Header="Aktiv" />
+                                                <DataGridTextColumn Width="200" Binding="{Binding SystemName}" Header="System" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="*" Binding="{Binding Details}" Header="Details/Konfiguration" />
+                                                <DataGridComboBoxColumn Width="120" SelectedItemBinding="{Binding AccessLevel}" Header="Zugriffslevel">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Standard</sys:String>
+                                                                        <sys:String>Erweitert</sys:String>
+                                                                        <sys:String>Administrator</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                
+                                <TabItem Header="Business Intelligence" x:Name="tabBI">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="btnLoadBI" Width="150" Margin="0,0,10,0" Content="BI-Tools laden" />
+                                            <Button x:Name="btnConfigureBI" Width="120" Content="Konfigurieren" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Row="1" Text="Business Intelligence &amp; Analytics Tools" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <DataGrid x:Name="dgBI" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" Height="200">
+                                            <DataGrid.Columns>
+                                                <DataGridCheckBoxColumn Width="60" Binding="{Binding HasAccess}" Header="Aktiv" />
+                                                <DataGridTextColumn Width="180" Binding="{Binding ToolName}" Header="BI-Tool" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="150" Binding="{Binding LicenseType}" Header="Lizenztyp" />
+                                                <DataGridTextColumn Width="*" Binding="{Binding Dashboards}" Header="Dashboards/Reports" />
+                                                <DataGridComboBoxColumn Width="100" SelectedItemBinding="{Binding Role}" Header="Rolle">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Viewer</sys:String>
+                                                                        <sys:String>Creator</sys:String>
+                                                                        <sys:String>Admin</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                
+                                <TabItem Header="Sicherheit &amp; Compliance" x:Name="tabSecurity">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="btnLoadSecurity" Width="150" Margin="0,0,10,0" Content="Security Tools laden" />
+                                            <Button x:Name="btnSecurityCheck" Width="120" Content="Sicherheitscheck" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Row="1" Text="Sicherheits- und Compliance-Tools" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <DataGrid x:Name="dgSecurity" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" Height="200">
+                                            <DataGrid.Columns>
+                                                <DataGridCheckBoxColumn Width="60" Binding="{Binding IsEnabled}" Header="Aktiv" />
+                                                <DataGridTextColumn Width="180" Binding="{Binding SecurityTool}" Header="Security Tool" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="120" Binding="{Binding Category}" Header="Kategorie" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="*" Binding="{Binding PolicySet}" Header="Richtlinien-Set" />
+                                                <DataGridComboBoxColumn Width="120" SelectedItemBinding="{Binding ComplianceLevel}" Header="Compliance">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Basic</sys:String>
+                                                                        <sys:String>Standard</sys:String>
+                                                                        <sys:String>Enhanced</sys:String>
+                                                                        <sys:String>Maximum</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                
+                                <TabItem Header="Projektmanagement" x:Name="tabProjectMgmt">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="btnLoadPM" Width="150" Margin="0,0,10,0" Content="PM-Tools laden" />
+                                            <Button x:Name="btnCreateProjects" Width="120" Content="Projekte erstellen" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Row="1" Text="Projektmanagement &amp; Collaboration Tools" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <DataGrid x:Name="dgProjectMgmt" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" Height="200">
+                                            <DataGrid.Columns>
+                                                <DataGridCheckBoxColumn Width="60" Binding="{Binding HasAccess}" Header="Aktiv" />
+                                                <DataGridTextColumn Width="160" Binding="{Binding ToolName}" Header="Tool" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="*" Binding="{Binding ProjectsAccess}" Header="Projekte/Workspaces" />
+                                                <DataGridComboBoxColumn Width="120" SelectedItemBinding="{Binding Role}" Header="Projektrolle">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Member</sys:String>
+                                                                        <sys:String>Contributor</sys:String>
+                                                                        <sys:String>Manager</sys:String>
+                                                                        <sys:String>Owner</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                                <DataGridComboBoxColumn Width="100" SelectedItemBinding="{Binding LicenseType}" Header="Lizenz">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Basic</sys:String>
+                                                                        <sys:String>Standard</sys:String>
+                                                                        <sys:String>Premium</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                
+                                <TabItem Header="Cloud Services" x:Name="tabCloudServices">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="btnLoadCloudServices" Width="150" Margin="0,0,10,0" Content="Cloud Services laden" />
+                                            <Button x:Name="btnProvisionCloud" Width="120" Content="Bereitstellen" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Row="1" Text="Cloud-Plattformen &amp; Services" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <DataGrid x:Name="dgCloudServices" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" Height="200">
+                                            <DataGrid.Columns>
+                                                <DataGridCheckBoxColumn Width="60" Binding="{Binding IsEnabled}" Header="Aktiv" />
+                                                <DataGridTextColumn Width="140" Binding="{Binding ServiceName}" Header="Cloud Service" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="100" Binding="{Binding Provider}" Header="Anbieter" IsReadOnly="True"/>
+                                                <DataGridTextColumn Width="*" Binding="{Binding ResourceAccess}" Header="Ressourcen/Berechtigung" />
+                                                <DataGridComboBoxColumn Width="120" SelectedItemBinding="{Binding AccessLevel}" Header="Zugriffslevel">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Read-Only</sys:String>
+                                                                        <sys:String>Contributor</sys:String>
+                                                                        <sys:String>Owner</sys:String>
+                                                                        <sys:String>Admin</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </Grid>
+                                </TabItem>
+                                
+                                <TabItem Header="Weitere Services" x:Name="tabAdditionalServices">
+                                    <Grid Margin="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="btnLoadAdditionalServices" Width="150" Margin="0,0,10,0" Content="Services laden" />
+                                            <Button x:Name="btnAddCustomService" Width="120" Content="Custom Service" />
+                                        </StackPanel>
+                                        
+                                        <TextBlock Grid.Row="1" Text="Weitere Business-Anwendungen &amp; Tools" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <DataGrid x:Name="dgAdditionalServices" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="True" Height="150">
+                                            <DataGrid.Columns>
+                                                <DataGridCheckBoxColumn Width="60" Binding="{Binding IsEnabled}" Header="Aktiv" />
+                                                <DataGridTextColumn Width="160" Binding="{Binding ServiceName}" Header="Service/Anwendung" />
+                                                <DataGridTextColumn Width="*" Binding="{Binding Description}" Header="Beschreibung" />
+                                                <DataGridTextColumn Width="120" Binding="{Binding Version}" Header="Version" />
+                                                <DataGridComboBoxColumn Width="100" SelectedItemBinding="{Binding Priority}" Header="Priorität">
+                                                    <DataGridComboBoxColumn.ElementStyle>
+                                                        <Style TargetType="ComboBox">
+                                                            <Setter Property="ItemsSource">
+                                                                <Setter.Value>
+                                                                    <x:Array Type="sys:String" xmlns:sys="clr-namespace:System;assembly=mscorlib">
+                                                                        <sys:String>Niedrig</sys:String>
+                                                                        <sys:String>Normal</sys:String>
+                                                                        <sys:String>Hoch</sys:String>
+                                                                        <sys:String>Kritisch</sys:String>
+                                                                    </x:Array>
+                                                                </Setter.Value>
+                                                            </Setter>
+                                                        </Style>
+                                                    </DataGridComboBoxColumn.ElementStyle>
+                                                </DataGridComboBoxColumn>
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                        
+                                        <!-- Service Statistics -->
+                                        <Border Grid.Row="3" Background="{StaticResource LightGrayBrush}" CornerRadius="4" Padding="10" Margin="0,10,0,0">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                                                    <TextBlock x:Name="totalServicesCount" Text="0" FontSize="18" FontWeight="Bold" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="Gesamt Services" FontSize="10" HorizontalAlignment="Center"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                                                    <TextBlock x:Name="activeServicesCount" Text="0" FontSize="18" FontWeight="Bold" Foreground="{StaticResource SuccessBrush}" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="Aktive Services" FontSize="10" HorizontalAlignment="Center"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2" HorizontalAlignment="Center">
+                                                    <TextBlock x:Name="pendingServicesCount" Text="0" FontSize="18" FontWeight="Bold" Foreground="{StaticResource WarningBrush}" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="Wartend" FontSize="10" HorizontalAlignment="Center"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="3" HorizontalAlignment="Center">
+                                                    <TextBlock x:Name="estimatedCostText" Text="€0.00" FontSize="18" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Center"/>
+                                                    <TextBlock Text="Geschätzte Kosten/Monat" FontSize="10" HorizontalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+                                </TabItem>
+                            </TabControl>
+
+                            <!-- Step Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnPrevStep6" Content="&lt; Zurück" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource DarkGrayBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnValidateServices" Content="Services validieren" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource WarningBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnUpdateUser6" Content="Services konfigurieren" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource WarningBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnNextStep6" Content="Weiter zur Zusammenfassung >" Style="{StaticResource ModernButton}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Step 7: Zusammenfassung -->
+                    <Border x:Name="step7Panel" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
+                                <TextBlock Text="Schritt 7: Zusammenfassung &amp; Abschluss" FontWeight="Bold" FontSize="18"/>
+                                <Border Style="{StaticResource SuccessBadge}" Margin="15,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="✓" FontWeight="Bold" Margin="0,0,5,0"/>
+                                        <TextBlock Text="Alle Schritte bereit zum Abschluss" FontWeight="SemiBold"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- Summary Details -->
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Übersicht der Konfiguration"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- Left Column -->
+                                <StackPanel Grid.Column="0">
+                                    <GroupBox Header="Benutzer &amp; AD" Padding="10" Margin="0,0,0,10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="Name:" Grid.Row="0" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryFullName" Grid.Row="0" Grid.Column="1" Text="Max Mustermann"/>
+                                            <TextBlock Text="Benutzername:" Grid.Row="1" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryUsername" Grid.Row="1" Grid.Column="1" Text="mmustermann"/>
+                                            <TextBlock Text="E-Mail:" Grid.Row="2" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryEmail" Grid.Row="2" Grid.Column="1" Text="max.mustermann@company.com"/>
+                                            <TextBlock Text="Abteilung:" Grid.Row="3" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryDepartment" Grid.Row="3" Grid.Column="1" Text="IT"/>
+                                            <TextBlock Text="Position:" Grid.Row="4" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryPosition" Grid.Row="4" Grid.Column="1" Text="Systemadministrator"/>
+                                            <TextBlock Text="OU:" Grid.Row="5" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryOU" Grid.Row="5" Grid.Column="1" Text="OU=IT,OU=Users,DC=company,DC=local" TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </GroupBox>
+                                    <GroupBox Header="Microsoft 365" Padding="10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="Status:" Grid.Row="0" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryM365Status" Grid.Row="0" Grid.Column="1" Text="Aktiviert" Foreground="{StaticResource SuccessBrush}"/>
+                                            <TextBlock Text="Lizenz:" Grid.Row="1" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryM365License" Grid.Row="1" Grid.Column="1" Text="Microsoft 365 Business Standard"/>
+                                            <TextBlock Text="Postfach:" Grid.Row="2" Grid.Column="0" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="summaryMailboxStatus" Grid.Row="2" Grid.Column="1" Text="Erstellt und konfiguriert"/>
+                                        </Grid>
+                                    </GroupBox>
+                                </StackPanel>
+
+                                <!-- Right Column -->
+                                <StackPanel Grid.Column="2">
+                                    <GroupBox Header="Gruppenzugehörigkeiten" Padding="10">
+                                        <StackPanel>
+                                            <TextBlock x:Name="summaryGroupCount" Text="5 Gruppen zugewiesen" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                            <ListBox x:Name="summaryGroupList" Height="200" Background="{StaticResource LightGrayBrush}" BorderThickness="0">
+                                                <ListBoxItem Content="Domain Users"/>
+                                                <ListBoxItem Content="IT-Team"/>
+                                                <ListBoxItem Content="VPN-Benutzer"/>
+                                                <ListBoxItem Content="Office365-Benutzer"/>
+                                                <ListBoxItem Content="Alle-Mitarbeiter"/>
+                                            </ListBox>
+                                        </StackPanel>
+                                    </GroupBox>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Style="{StaticResource SectionHeader}" Text="Abschließende Aktionen"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <CheckBox x:Name="chkSendWelcomeEmail" Content="Willkommens-E-Mail an Benutzer senden" Margin="5" IsChecked="True"/>
+                                    <CheckBox x:Name="chkNotifyManager" Content="Manager über neuen Benutzer informieren" Margin="5" IsChecked="True"/>
+                                    <CheckBox x:Name="chkSendPasswordToManager" Content="Generiertes Passwort an Manager senden" Margin="25,0,5,5" IsChecked="True"/>
+                                    <CheckBox x:Name="chkCreateDocumentation" Content="Dokumentation generieren" Margin="5" IsChecked="True"/>
+                                    <StackPanel Orientation="Horizontal" Margin="25,0,5,5">
+                                        <Label Content="Format:" VerticalAlignment="Center"/>
+                                        <ComboBox x:Name="cmbDocFormat" Width="120">
+                                            <ComboBoxItem Content="PDF" IsSelected="True"/>
+                                            <ComboBoxItem Content="Word"/>
+                                            <ComboBoxItem Content="Text"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <Label Content="Abschluss-Protokoll:" FontWeight="SemiBold"/>
+                                    <TextBox x:Name="txtFinalLog" Height="120" IsReadOnly="True" Background="{StaticResource LightGrayBrush}" 
+                                             VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"
+                                             Text="Bereit für den Abschluss..."/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Final Buttons -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                                <Button x:Name="btnPrevStep7" Content="&lt; Zurück" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource DarkGrayBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnStartNew" Content="Neuen Benutzer anlegen" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource PrimaryBrush}" Margin="0,0,10,0"/>
+                                <Button x:Name="btnFinalizeOnboarding" Content="Onboarding abschließen &amp; Schließen" Style="{StaticResource ModernButton}" 
+                                        Background="{StaticResource SuccessBrush}" FontWeight="Bold"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                </Grid>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- Footer -->
+        <Border Grid.Row="3" Background="White" BorderBrush="{StaticResource MediumGrayBrush}" BorderThickness="0,1,0,0">
+            <StatusBar Padding="5">
+                <StatusBar.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                        </Grid>
+                    </ItemsPanelTemplate>
+                </StatusBar.ItemsPanel>
+                <StatusBarItem>
+                    <StackPanel Orientation="Horizontal" Margin="10,0">
+                        <TextBlock Text="Status:" FontWeight="SemiBold" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="statusTextFooter" Text="Bereit" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </StatusBarItem>
+                <StatusBarItem Grid.Column="1" HorizontalAlignment="Center">
+                    <ProgressBar x:Name="actionProgressBar" Width="250" Height="12" IsIndeterminate="True" Visibility="Hidden"/>
+                </StatusBarItem>
+                <StatusBarItem Grid.Column="2">
+                    <TextBlock x:Name="versionTextFooter" Text="easyONBOARDING v2.0 | © 2025 Phin-IT" Margin="0,0,10,0" 
+                               Foreground="{StaticResource DarkGrayBrush}" FontSize="11"/>
+                </StatusBarItem>
+            </StatusBar>
+        </Border>
+    </Grid>
+</Window>

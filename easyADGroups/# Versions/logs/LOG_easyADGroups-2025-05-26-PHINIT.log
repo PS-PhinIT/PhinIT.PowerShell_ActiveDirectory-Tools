@@ -1,0 +1,16 @@
+2025-05-26 12:34:52 [INFO] - Script gestartet - Version 0.2.8
+2025-05-26 12:34:52 [DEBUG] - Debug-Modus aktiv - Detaillierte Ausgaben werden angezeigt
+2025-05-26 12:34:52 [DEBUG] - Script-Verzeichnis: \\192.168.100.15\Daten1\06-Scripts\!PS-easyIT\#GitHub-Repos\easyADGroups\# Versions
+2025-05-26 12:34:52 [DEBUG] - INI-Datei: \\192.168.100.15\Daten1\06-Scripts\!PS-easyIT\#GitHub-Repos\easyADGroups\# Versions\easyADGroups.ini
+2025-05-26 12:34:52 [DEBUG] - Log-Datei: \\192.168.100.15\Daten1\06-Scripts\!PS-easyIT\#GitHub-Repos\easyADGroups\# Versions\logs\LOG_easyADGroups-2025-05-26-PHINIT.log
+2025-05-26 12:34:52 [DEBUG] - App-Name aus INI gesetzt: easyADgroup
+2025-05-26 12:34:52 [DEBUG] - Info-Label mit ersetzten Platzhaltern gesetzt: 0.2.8 | 16.03.2025 | Andreas Hepp | www.phinit.de
+2025-05-26 12:34:52 [DEBUG] - Starte AD-Datenabfrage
+2025-05-26 12:34:52 [INFO] - AD-Daten werden abgerufen...
+2025-05-26 12:34:52 [DEBUG] - Rufe alle OUs aus AD ab...
+2025-05-26 12:34:52 [DEBUG] - Anzahl gefundener OUs nach Filterung: 9
+2025-05-26 12:34:54 [DEBUG] - Benutzerabfrage erfolgreich: 3 Benutzer geladen
+2025-05-26 12:34:54 [DEBUG] - Befülle OU-ComboBox...
+2025-05-26 12:34:54 [DEBUG] - Befülle User-ListBox mit verbessertem Format...
+2025-05-26 12:34:54 [INFO] - AD-Daten erfolgreich geladen
+2025-05-26 12:34:54 [INFO] - Anwendung gestartet und bereit

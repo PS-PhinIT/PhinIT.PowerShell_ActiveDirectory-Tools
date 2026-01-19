@@ -1,0 +1,51 @@
+[2025-07-15 21:02:36] [INFO] Skript 'easyONB_V2.0.1.ps1' gestartet.
+[2025-07-15 21:02:37] [INFO] Event-Handler für die Navigation wurden registriert.
+[2025-07-15 21:02:37] [INFO] Lade erforderliche .NET-Assemblies für die GUI...
+[2025-07-15 21:02:37] [INFO] GUI-Assemblies erfolgreich geladen.
+[2025-07-15 21:02:37] [INFO] Lade XAML-GUI-Definition...
+[2025-07-15 21:02:38] [INFO] XAML-Datei erfolgreich geladen und geparst.
+[2025-07-15 21:02:38] [INFO] Binde GUI-Steuerelemente an Variablen...
+[2025-07-15 21:02:38] [INFO] Wechsle zu Tab: step1Panel
+[2025-07-15 21:02:38] [INFO] Initialisiere Tab: step1Panel
+[2025-07-15 21:02:38] [INFO] Initialisiere Tab 1 (Benutzerdaten)
+[2025-07-15 21:02:39] [INFO] GUI wird gestartet. Warte auf Benutzereingaben.
+[2025-07-15 21:02:41] [INFO] Wechsle zu Tab: step2Panel
+[2025-07-15 21:02:41] [INFO] Initialisiere Tab: step2Panel
+[2025-07-15 21:02:41] [INFO] Initialisiere Tab 2 (AD-Einstellungen)
+[2025-07-15 21:02:42] [INFO] Wechsle zu Tab: step3Panel
+[2025-07-15 21:02:42] [INFO] Initialisiere Tab: step3Panel
+[2025-07-15 21:02:42] [INFO] Initialisiere Tab 3 (Exchange/M365)
+[2025-07-15 21:02:44] [INFO] Wechsle zu Tab: step4Panel
+[2025-07-15 21:02:44] [INFO] Initialisiere Tab: step4Panel
+[2025-07-15 21:02:44] [INFO] Initialisiere Tab 4 (Gruppen)
+[2025-07-15 21:02:45] [INFO] Wechsle zu Tab: step5Panel
+[2025-07-15 21:02:45] [INFO] Initialisiere Tab: step5Panel
+[2025-07-15 21:02:45] [INFO] Initialisiere Tab 5 (Systeme)
+[2025-07-15 21:02:45] [INFO] Initialisiere DataGrids in TabControl
+[2025-07-15 21:02:46] [INFO] Wechsle zu Tab: step6Panel
+[2025-07-15 21:02:46] [INFO] Initialisiere Tab: step6Panel
+[2025-07-15 21:02:47] [INFO] Initialisiere Tab 6 (Zusammenfassung)
+[2025-07-15 21:02:48] [INFO] Wechsle zu Tab: step5Panel
+[2025-07-15 21:02:48] [INFO] Initialisiere Tab: step5Panel
+[2025-07-15 21:02:48] [INFO] Initialisiere Tab 5 (Systeme)
+[2025-07-15 21:02:48] [INFO] Initialisiere DataGrids in TabControl
+[2025-07-15 21:02:55] [INFO] Wechsle zu Tab: step5Panel
+[2025-07-15 21:02:56] [INFO] Initialisiere Tab: step5Panel
+[2025-07-15 21:02:56] [INFO] Initialisiere Tab 5 (Systeme)
+[2025-07-15 21:02:56] [INFO] Initialisiere DataGrids in TabControl
+[2025-07-15 21:02:57] [INFO] Wechsle zu Tab: step6Panel
+[2025-07-15 21:02:57] [INFO] Initialisiere Tab: step6Panel
+[2025-07-15 21:02:57] [INFO] Initialisiere Tab 6 (Zusammenfassung)
+[2025-07-15 21:02:59] [INFO] Wechsle zu Tab: step4Panel
+[2025-07-15 21:02:59] [INFO] Initialisiere Tab: step4Panel
+[2025-07-15 21:02:59] [INFO] Initialisiere Tab 4 (Gruppen)
+[2025-07-15 21:03:00] [INFO] Wechsle zu Tab: step3Panel
+[2025-07-15 21:03:00] [INFO] Initialisiere Tab: step3Panel
+[2025-07-15 21:03:00] [INFO] Initialisiere Tab 3 (Exchange/M365)
+[2025-07-15 21:03:01] [INFO] Wechsle zu Tab: step2Panel
+[2025-07-15 21:03:02] [INFO] Initialisiere Tab: step2Panel
+[2025-07-15 21:03:02] [INFO] Initialisiere Tab 2 (AD-Einstellungen)
+[2025-07-15 21:03:03] [INFO] Wechsle zu Tab: step3Panel
+[2025-07-15 21:03:03] [INFO] Initialisiere Tab: step3Panel
+[2025-07-15 21:03:03] [INFO] Initialisiere Tab 3 (Exchange/M365)
+[2025-07-15 21:03:12] [INFO] Skript beendet.

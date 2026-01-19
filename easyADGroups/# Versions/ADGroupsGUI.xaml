@@ -1,0 +1,154 @@
+<Window 
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="AD Gruppenmanager" 
+    Width="650" 
+    Height="820" 
+    WindowStartupLocation="CenterScreen" 
+    ResizeMode="NoResize">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Header Panel -->
+        <Border
+            Grid.Row="0"
+            Background="#F0F0F0"
+            BorderBrush="DarkGray"
+            BorderThickness="0,0,0,1"
+            Height="70">
+            <DockPanel Margin="10" LastChildFill="False">
+                <StackPanel DockPanel.Dock="Left" Orientation="Vertical">
+                    <TextBlock
+                        x:Name="labelAppName"
+                        Margin="10,0,20,0"
+                        FontSize="18"
+                        FontWeight="Bold"
+                        Foreground="Black"
+                        Text="AD Gruppenmanager" />
+                    <TextBlock
+                        x:Name="labelInfo"
+                        Margin="10,6,0,0"
+                        FontSize="10"
+                        Text="{Binding LabelInfo}" />
+                </StackPanel>
+                <Border
+                    Margin="0,0,10,0"
+                    BorderBrush="Transparent"
+                    BorderThickness="0"
+                    DockPanel.Dock="Right">
+                    <Image
+                        x:Name="pictureBox"
+                        Width="150"
+                        Height="60"
+                        Stretch="Fill">
+                    </Image>
+                </Border>
+            </DockPanel>
+        </Border>
+
+        <!-- Main Panel -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="10">
+                <!-- OU Selection Panel -->
+                <GroupBox Header="OU Auswahl" Margin="0,10,0,0" Padding="5">
+                    <StackPanel>
+                        <Label Content="Organizational Unit:" FontWeight="Bold" />
+                        <ComboBox x:Name="comboBoxOU" Margin="0,5,0,5" 
+                                  DisplayMemberPath="Name" SelectedValuePath="DN" />
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Group Creation Panel -->
+                <GroupBox Header="Gruppeneinstellungen" Margin="0,10,0,0" Padding="5">
+                    <StackPanel>
+                        <Label Content="Gruppenname:" FontWeight="Bold" />
+                        <TextBox x:Name="textBoxPrefix" Margin="0,5,0,5" />
+
+                        <DockPanel LastChildFill="True" Margin="0,5,0,5">
+                            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                                <StackPanel Margin="0,0,15,0">
+                                    <Label Content="Separator:" FontWeight="Bold" />
+                                    <TextBox x:Name="textBoxSeparator" Text="-" Width="60" HorizontalAlignment="Left" />
+                                </StackPanel>
+                                <StackPanel Margin="0,0,15,0">
+                                    <Label Content="Start Nummer:" FontWeight="Bold" />
+                                    <TextBox x:Name="textBoxStart" Width="100" HorizontalAlignment="Left" />
+                                </StackPanel>
+                                <StackPanel Margin="0,0,15,0">
+                                    <Label Content="End Nummer:" FontWeight="Bold" />
+                                    <TextBox x:Name="textBoxEnd" Width="100" HorizontalAlignment="Left" />
+                                </StackPanel>
+                                <StackPanel>
+                                    <Label Content="Beschreibung:" FontWeight="Bold" />
+                                    <TextBox x:Name="textBoxDescription" Width="260" HorizontalAlignment="Left" />
+                                </StackPanel>
+                            </StackPanel>
+                        </DockPanel>
+
+                        <DockPanel LastChildFill="True" Margin="0,5,0,10">
+                            <GroupBox DockPanel.Dock="Left" Width="300" Margin="0,0,10,0">
+                                <StackPanel Margin="5">
+                                    <Label Content="Gruppentyp:" FontWeight="Bold" Margin="0,0,10,0" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="radioSecurity" Content="Security" IsChecked="True" Margin="0,0,10,0" />
+                                        <RadioButton x:Name="radioDistribution" Content="Distribution" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </GroupBox>
+
+                            <GroupBox DockPanel.Dock="Right" Width="300" Margin="0,0,10,0">
+                                <StackPanel Margin="5">
+                                    <Label Content="Geltungsbereich:" FontWeight="Bold" Margin="0,0,10,0" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="radioGlobal" Content="Global" IsChecked="True" Margin="0,0,10,0" />
+                                        <RadioButton x:Name="radioUniversal" Content="Universal" Margin="0,0,10,0" />
+                                        <RadioButton x:Name="radioDomainLocal" Content="DomainLocal" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </GroupBox>
+                        </DockPanel>
+                        
+                        <CheckBox x:Name="chkSpecial" Content="JIRA / Confluence Gruppe(n) erstellen (Suffix aus INI)" Margin="0,10,0,5" />
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Members Panel -->
+                <GroupBox Header="Mitglieder" Margin="0,10,0,0" Padding="5">
+                    <StackPanel>
+                        <Label Content="Gruppenmitglieder:" FontWeight="Bold" />
+                        <ListBox x:Name="listBoxUsers" Height="170" Margin="0,5,0,5" 
+                                 SelectionMode="Extended" Background="LightGray" Foreground="DarkBlue" />
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Button Panel -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
+                    <Button x:Name="buttonPreview" Content="Preview" Width="90" Height="20" Margin="0,0,10,0" Background="LightBlue" />
+                    <Button x:Name="buttonCreate" Content="Create" Width="90" Height="20" Margin="10,0,10,0" Background="LightGreen" />
+                    <Button x:Name="buttonClose" Content="Schließen" Width="90" Height="20" Margin="10,0,0,0" Background="LightCoral" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Footer Panel -->
+        <Border
+            Grid.Row="2"
+            Background="#F0F0F0"
+            BorderBrush="DarkGray"
+            BorderThickness="0,1,0,0" 
+            Height="30">
+            <DockPanel Margin="10,0">
+                <TextBlock x:Name="linkLabel" DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <Hyperlink x:Name="hyperlinkWebsite" NavigateUri="https://phinit.de">
+                        https://phinit.de
+                    </Hyperlink>
+                </TextBlock>
+                <TextBlock x:Name="footerInfo" DockPanel.Dock="Right" VerticalAlignment="Center" FontSize="10" />
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

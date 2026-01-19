@@ -1,0 +1,35 @@
+[2025-07-16 21:22:18] [INFO] Skript 'easyONB_V2.0.1.ps1' gestartet.
+[2025-07-16 21:22:19] [INFO] GUI-Assemblies erfolgreich geladen.
+[2025-07-16 21:22:19] [INFO] XAML-Datei erfolgreich geladen und geparst.
+[2025-07-16 21:22:19] [WARN] Abteilungsdaten sind nicht geladen. Lade sie jetzt...
+[2025-07-16 21:22:19] [ERROR] Fehler beim Laden der Abteilungskonfigurationen: Globale Konfiguration ist nicht geladen.
+[2025-07-16 21:22:19] [WARN] Fehler beim Laden der Abteilungen: Fehler beim Laden der Abteilungskonfigurationen: Globale Konfiguration ist nicht geladen.
+[2025-07-16 21:22:20] [ERROR] Fehler bei der Initialisierung von Tab 1: The term 'Add-ValidationEventHandlers' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+[2025-07-16 21:22:20] [INFO] GUI wird gestartet. Warte auf Benutzereingaben.
+[2025-07-16 21:22:23] [INFO] Skript beendet.
+[2025-07-16 21:26:33] [INFO] Skript 'easyONB_V2.0.1.ps1' gestartet.
+[2025-07-16 21:26:33] [INFO] GUI-Assemblies erfolgreich geladen.
+[2025-07-16 21:26:34] [INFO] XAML-Datei erfolgreich geladen und geparst.
+[2025-07-16 21:26:34] [WARN] Abteilungsdaten sind nicht geladen. Lade sie jetzt...
+[2025-07-16 21:26:34] [WARN] Fehler beim Laden der Abteilung 'Department_IT': Method invocation failed because [System.Collections.Specialized.OrderedDictionary] does not contain a method named 'ContainsKey'.
+[2025-07-16 21:26:34] [WARN] Fehler beim Laden der Abteilung 'Department_Sales': Method invocation failed because [System.Collections.Specialized.OrderedDictionary] does not contain a method named 'ContainsKey'.
+[2025-07-16 21:26:34] [WARN] Fehler beim Laden der Abteilung 'Department_Marketing': Method invocation failed because [System.Collections.Specialized.OrderedDictionary] does not contain a method named 'ContainsKey'.
+[2025-07-16 21:26:35] [INFO] Abteilungskonfigurationen erfolgreich geladen: 0 Abteilungen
+[2025-07-16 21:26:35] [WARN] Fehler beim Laden der Abteilungen: Exception setting "ItemsSource": "Die Items-Sammlung muss vor dem Verwenden von "ItemsSource" leer sein."
+[2025-07-16 21:26:35] [ERROR] Fehler bei der Initialisierung von Tab 1: The term 'Add-ValidationEventHandlers' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+[2025-07-16 21:26:35] [INFO] GUI wird gestartet. Warte auf Benutzereingaben.
+[2025-07-16 21:26:53] [INFO] Skript 'easyONB_V2.0.1.ps1' gestartet.
+[2025-07-16 21:26:53] [INFO] GUI-Assemblies erfolgreich geladen.
+[2025-07-16 21:26:53] [INFO] XAML-Datei erfolgreich geladen und geparst.
+[2025-07-16 21:26:54] [WARN] Abteilungsdaten sind nicht geladen. Lade sie jetzt...
+[2025-07-16 21:26:54] [WARN] Fehler beim Laden der Abteilung 'Department_IT': Method invocation failed because [System.Collections.Specialized.OrderedDictionary] does not contain a method named 'ContainsKey'.
+[2025-07-16 21:26:54] [WARN] Fehler beim Laden der Abteilung 'Department_Sales': Method invocation failed because [System.Collections.Specialized.OrderedDictionary] does not contain a method named 'ContainsKey'.
+[2025-07-16 21:26:54] [WARN] Fehler beim Laden der Abteilung 'Department_Marketing': Method invocation failed because [System.Collections.Specialized.OrderedDictionary] does not contain a method named 'ContainsKey'.
+[2025-07-16 21:26:54] [INFO] Abteilungskonfigurationen erfolgreich geladen: 0 Abteilungen
+[2025-07-16 21:26:54] [WARN] Fehler beim Laden der Abteilungen: Exception setting "ItemsSource": "Die Items-Sammlung muss vor dem Verwenden von "ItemsSource" leer sein."
+[2025-07-16 21:26:55] [ERROR] Fehler bei der Initialisierung von Tab 1: The term 'Add-ValidationEventHandlers' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+[2025-07-16 21:26:55] [INFO] GUI wird gestartet. Warte auf Benutzereingaben.
+[2025-07-16 21:26:57] [INFO] Skript beendet.
