@@ -1,14 +1,22 @@
 param(
     [switch]$WithDevDependencies,
     [switch]$CheckOnly,
+    [switch]$PrepareOfflineCache,
+    [switch]$OfflineOnly,
     [bool]$InstallMissingRequiredComponents = $true,
     [bool]$InstallOptionalComponents = $false,
     [switch]$AllowUnsupportedPythonVersion,
     [string]$InstallerCacheDir = "$env:TEMP\easyonb-v2-setup",
+    [string]$OfflineCacheRoot = '',
+    [string]$ComponentLogRoot = '',
+    [string]$SetupStatePath = '',
     [string[]]$PythonVersionCandidates = @('3.13.5', '3.13.4', '3.13.3', '3.13.2', '3.13.1', '3.13.0'),
     [string]$PythonInstallerUrl = '',
+    [string]$PythonInstallerPath = '',
     [string]$UrlRewriteInstallerUrl = 'https://download.microsoft.com/download/D/D/9/DD9A82C0-1D98-4C6E-A283-AB3A21A9EF57/rewrite_amd64_en-US.msi',
-    [string]$ArrInstallerUrl = ''
+    [string]$UrlRewriteInstallerPath = '',
+    [string]$ArrInstallerUrl = '',
+    [string]$ArrInstallerPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -22,9 +30,23 @@ try { $OutputEncoding = $utf8NoBom } catch {}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($OfflineCacheRoot)) {
+    $OfflineCacheRoot = Join-Path $projectRoot 'setup-cache'
+}
+if ([string]::IsNullOrWhiteSpace($ComponentLogRoot)) {
+    $ComponentLogRoot = Join-Path $projectRoot 'logs\setup'
+}
+if ([string]::IsNullOrWhiteSpace($SetupStatePath)) {
+    $SetupStatePath = Join-Path $ComponentLogRoot 'setup-state.json'
+}
+
 Push-Location $projectRoot
 
 try {
+    $script:SetupState = $null
+    $script:ResumeDetected = $false
+    $script:CurrentLogSessionDir = $null
+
     function Write-Section {
         param([string]$Message)
 
@@ -116,6 +138,312 @@ try {
         if (-not (Test-Path -Path $Path)) {
             New-Item -ItemType Directory -Path $Path -Force | Out-Null
         }
+    }
+
+    function ConvertTo-SafeFileName {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return 'unnamed'
+        }
+
+        $safeValue = $Value
+        foreach ($invalidChar in [System.IO.Path]::GetInvalidFileNameChars()) {
+            $safeValue = $safeValue.Replace($invalidChar, '-')
+        }
+
+        $safeValue = $safeValue -replace '\s+', '-'
+        $safeValue = $safeValue -replace '-{2,}', '-'
+        $safeValue = $safeValue.Trim('-')
+        if ([string]::IsNullOrWhiteSpace($safeValue)) {
+            return 'unnamed'
+        }
+
+        return $safeValue
+    }
+
+    function Get-UtcTimestamp {
+        return (Get-Date).ToUniversalTime().ToString('o')
+    }
+
+    function New-SetupStateObject {
+        [pscustomobject]@{
+            SchemaVersion        = 1
+            RunId                = 'setup-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+            CreatedUtc           = Get-UtcTimestamp
+            UpdatedUtc           = Get-UtcTimestamp
+            LastPhase            = 'initial'
+            PendingReboot        = $false
+            PendingRebootReasons = @()
+            ResumeRecommended    = $false
+            CompletedActions     = @()
+            Notes                = @()
+            ComponentLogs        = @()
+        }
+    }
+
+    function Set-StatePropertyDefault {
+        param(
+            [psobject]$Object,
+            [string]$PropertyName,
+            $DefaultValue
+        )
+
+        $property = $Object.PSObject.Properties[$PropertyName]
+        if ($null -eq $property) {
+            Add-Member -InputObject $Object -MemberType NoteProperty -Name $PropertyName -Value $DefaultValue
+            return
+        }
+
+        if ($null -eq $property.Value) {
+            $Object.$PropertyName = $DefaultValue
+        }
+    }
+
+    function Set-SetupStateDefaults {
+        param([psobject]$State)
+
+        Set-StatePropertyDefault -Object $State -PropertyName 'SchemaVersion' -DefaultValue 1
+        Set-StatePropertyDefault -Object $State -PropertyName 'RunId' -DefaultValue ('setup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        Set-StatePropertyDefault -Object $State -PropertyName 'CreatedUtc' -DefaultValue (Get-UtcTimestamp)
+        Set-StatePropertyDefault -Object $State -PropertyName 'UpdatedUtc' -DefaultValue (Get-UtcTimestamp)
+        Set-StatePropertyDefault -Object $State -PropertyName 'LastPhase' -DefaultValue 'initial'
+        Set-StatePropertyDefault -Object $State -PropertyName 'PendingReboot' -DefaultValue $false
+        Set-StatePropertyDefault -Object $State -PropertyName 'PendingRebootReasons' -DefaultValue @()
+        Set-StatePropertyDefault -Object $State -PropertyName 'ResumeRecommended' -DefaultValue $false
+        Set-StatePropertyDefault -Object $State -PropertyName 'CompletedActions' -DefaultValue @()
+        Set-StatePropertyDefault -Object $State -PropertyName 'Notes' -DefaultValue @()
+        Set-StatePropertyDefault -Object $State -PropertyName 'ComponentLogs' -DefaultValue @()
+
+        $State.PendingRebootReasons = @($State.PendingRebootReasons)
+        $State.CompletedActions = @($State.CompletedActions)
+        $State.Notes = @($State.Notes)
+        $State.ComponentLogs = @($State.ComponentLogs)
+        return $State
+    }
+
+    function Get-SetupStateObject {
+        if (Test-Path -Path $SetupStatePath) {
+            try {
+                $loadedState = Get-Content -Path $SetupStatePath -Raw | ConvertFrom-Json
+                $script:ResumeDetected = $true
+                return Set-SetupStateDefaults -State $loadedState
+            }
+            catch {
+                Write-Detail -Level 'WARN' -Message "Bestehende Setup-State-Datei ist unlesbar und wird neu aufgebaut: $($_.Exception.Message)"
+            }
+        }
+
+        $script:ResumeDetected = $false
+        return New-SetupStateObject
+    }
+
+    function Save-SetupState {
+        param([psobject]$State)
+
+        $State.UpdatedUtc = Get-UtcTimestamp
+        $stateDirectory = Split-Path -Parent $SetupStatePath
+        if (-not [string]::IsNullOrWhiteSpace($stateDirectory)) {
+            New-DirectoryIfMissing -Path $stateDirectory
+        }
+
+        $State | ConvertTo-Json -Depth 12 | Set-Content -Path $SetupStatePath -Encoding UTF8
+    }
+
+    function Add-SetupCompletedAction {
+        param([string]$Action)
+
+        if ([string]::IsNullOrWhiteSpace($Action)) {
+            return
+        }
+
+        $completedActions = @($script:SetupState.CompletedActions)
+        if ($completedActions -notcontains $Action) {
+            $script:SetupState.CompletedActions = $completedActions + $Action
+            Save-SetupState -State $script:SetupState
+        }
+    }
+
+    function Add-SetupNote {
+        param([string]$Note)
+
+        if ([string]::IsNullOrWhiteSpace($Note)) {
+            return
+        }
+
+        $notes = @($script:SetupState.Notes)
+        $script:SetupState.Notes = $notes + $Note
+        Save-SetupState -State $script:SetupState
+    }
+
+    function Add-SetupComponentLog {
+        param([psobject]$Entry)
+
+        $componentLogs = @($script:SetupState.ComponentLogs)
+        $script:SetupState.ComponentLogs = $componentLogs + $Entry
+        Save-SetupState -State $script:SetupState
+    }
+
+    function Set-SetupPhase {
+        param([string]$Phase)
+
+        $script:SetupState.LastPhase = $Phase
+        Save-SetupState -State $script:SetupState
+    }
+
+    function Set-SetupRebootPending {
+        param([string[]]$Reasons)
+
+        $script:SetupState.PendingReboot = $true
+        $script:SetupState.ResumeRecommended = $true
+        $script:SetupState.PendingRebootReasons = @($Reasons | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        Save-SetupState -State $script:SetupState
+    }
+
+    function Clear-SetupRebootPending {
+        $script:SetupState.PendingReboot = $false
+        $script:SetupState.ResumeRecommended = $false
+        $script:SetupState.PendingRebootReasons = @()
+        Save-SetupState -State $script:SetupState
+    }
+
+    function Clear-SetupStateFile {
+        if (Test-Path -Path $SetupStatePath) {
+            Remove-Item -Path $SetupStatePath -Force
+        }
+    }
+
+    function Start-SetupSession {
+        if ($null -ne $script:SetupState) {
+            return
+        }
+
+        New-DirectoryIfMissing -Path $ComponentLogRoot
+        New-DirectoryIfMissing -Path $OfflineCacheRoot
+
+        $script:SetupState = Get-SetupStateObject
+        $script:CurrentLogSessionDir = Join-Path $ComponentLogRoot $script:SetupState.RunId
+        New-DirectoryIfMissing -Path $script:CurrentLogSessionDir
+        Save-SetupState -State $script:SetupState
+
+        if ($script:ResumeDetected) {
+            Write-Detail -Level 'INFO' -Message "Fortsetzung erkannt. Vorhandene State-Datei: $SetupStatePath"
+            Write-Detail -Level 'INFO' -Message "Letzte Phase laut State-Datei: $($script:SetupState.LastPhase)"
+        }
+    }
+
+    function New-ComponentLogContext {
+        param(
+            [string]$Component,
+            [string]$Action
+        )
+
+        Start-SetupSession
+
+        $componentDirectory = Join-Path $script:CurrentLogSessionDir (ConvertTo-SafeFileName -Value $Component)
+        New-DirectoryIfMissing -Path $componentDirectory
+
+        $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $actionFileName = ConvertTo-SafeFileName -Value $Action
+        $basePath = Join-Path $componentDirectory "$timestamp-$actionFileName"
+
+        $context = [pscustomobject]@{
+            Component    = $Component
+            Action       = $Action
+            LogPath      = "$basePath.log"
+            MetadataPath = "$basePath.json"
+            StartedUtc   = Get-UtcTimestamp
+        }
+
+        "[$($context.StartedUtc)][INFO] Start $Component :: $Action" | Set-Content -Path $context.LogPath -Encoding UTF8
+        return $context
+    }
+
+    function Write-ComponentLogEntry {
+        param(
+            [psobject]$Context,
+            [ValidateSet('INFO', 'OK', 'WARN', 'ERROR')]
+            [string]$Level,
+            [string]$Message
+        )
+
+        if ($null -eq $Context) {
+            return
+        }
+
+        $line = "[$(Get-UtcTimestamp)][$Level] $Message"
+        Add-Content -Path $Context.LogPath -Value $line -Encoding UTF8
+    }
+
+    function Complete-ComponentLog {
+        param(
+            [psobject]$Context,
+            [ValidateSet('success', 'warning', 'error', 'skipped')]
+            [string]$Outcome,
+            [int]$ExitCode = 0,
+            [string[]]$AdditionalFiles = @(),
+            [string[]]$Notes = @()
+        )
+
+        if ($null -eq $Context) {
+            return
+        }
+
+        $metadata = [pscustomobject]@{
+            Component       = $Context.Component
+            Action          = $Context.Action
+            Outcome         = $Outcome
+            ExitCode        = $ExitCode
+            StartedUtc      = $Context.StartedUtc
+            FinishedUtc     = Get-UtcTimestamp
+            LogPath         = $Context.LogPath
+            MetadataPath    = $Context.MetadataPath
+            AdditionalFiles = @($AdditionalFiles)
+            Notes           = @($Notes)
+        }
+
+        $metadata | ConvertTo-Json -Depth 8 | Set-Content -Path $Context.MetadataPath -Encoding UTF8
+        Add-SetupComponentLog -Entry $metadata
+    }
+
+    function Get-PendingRebootState {
+        $reasons = @()
+
+        if (Test-Path -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
+            $reasons += 'ComponentBasedServicing:RebootPending'
+        }
+
+        if (Test-Path -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+            $reasons += 'WindowsUpdate:RebootRequired'
+        }
+
+        try {
+            $sessionManager = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -ErrorAction Stop
+            if ($null -ne $sessionManager.PendingFileRenameOperations) {
+                $reasons += 'SessionManager:PendingFileRenameOperations'
+            }
+        }
+        catch {
+        }
+
+        [pscustomobject]@{
+            IsPending = ($reasons.Count -gt 0)
+            Reasons   = $reasons
+        }
+    }
+
+    function Stop-ForPendingReboot {
+        param(
+            [string]$Phase,
+            [string[]]$Reasons
+        )
+
+        Start-SetupSession
+        Set-SetupPhase -Phase $Phase
+        Set-SetupRebootPending -Reasons $Reasons
+        Write-Detail -Level 'WARN' -Message ('Neustart erforderlich oder ausstehend: ' + (($Reasons | Sort-Object -Unique) -join ', '))
+        Write-Detail -Level 'WARN' -Message "Nach dem Reboot dieses Skript erneut aufrufen. Die Fortsetzung erfolgt automatisch ueber $SetupStatePath."
+        return $true
     }
 
     function Get-InstalledPrograms {
@@ -471,61 +799,7 @@ try {
         }
     }
 
-    function Save-WebFile {
-        param(
-            [string[]]$Urls,
-            [string]$DestinationFileName
-        )
-
-        New-DirectoryIfMissing -Path $InstallerCacheDir
-        $targetPath = Join-Path $InstallerCacheDir $DestinationFileName
-
-        foreach ($url in $Urls) {
-            if ([string]::IsNullOrWhiteSpace($url)) {
-                continue
-            }
-
-            try {
-                Write-Detail -Level 'INFO' -Message "Lade Installer herunter: $url"
-                Invoke-WebRequest -Uri $url -OutFile $targetPath -UseBasicParsing
-                if ((Test-Path -Path $targetPath) -and ((Get-Item -Path $targetPath).Length -gt 0)) {
-                    Write-Detail -Level 'OK' -Message "Download erfolgreich: $targetPath"
-                    return $targetPath
-                }
-            }
-            catch {
-                Write-Detail -Level 'WARN' -Message "Download fehlgeschlagen: $url ($($_.Exception.Message))"
-            }
-        }
-
-        throw "Keiner der konfigurierten Download-Links konnte erfolgreich geladen werden: $($Urls -join ', ')"
-    }
-
-    function Install-MsiPackage {
-        param(
-            [string]$MsiPath,
-            [string]$DisplayName
-        )
-
-        if (-not (Test-IsAdministrator)) {
-            throw "Fuer die Installation von $DisplayName werden Administratorrechte benoetigt."
-        }
-
-        Write-Section -Message "Installiere $DisplayName"
-        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $MsiPath, '/qn', '/norestart') -Wait -PassThru
-        if ($process.ExitCode -notin 0, 3010) {
-            throw "$DisplayName konnte nicht installiert werden. Exitcode: $($process.ExitCode)"
-        }
-
-        if ($process.ExitCode -eq 3010) {
-            Write-Detail -Level 'WARN' -Message "$DisplayName meldet einen Reboot-Hinweis (3010)."
-        }
-        else {
-            Write-Detail -Level 'OK' -Message "$DisplayName wurde installiert."
-        }
-    }
-
-    function Install-PythonRuntime {
+    function Get-PythonInstallerUrls {
         $pythonUrls = @()
         if (-not [string]::IsNullOrWhiteSpace($PythonInstallerUrl)) {
             $pythonUrls += $PythonInstallerUrl
@@ -536,40 +810,235 @@ try {
             }
         }
 
-        $installerPath = Save-WebFile -Urls $pythonUrls -DestinationFileName 'python-3.13-amd64.exe'
-        $argumentList = @('/quiet', 'PrependPath=1', 'Include_pip=1', 'Include_launcher=1', 'Shortcuts=0', 'CompileAll=0')
-        if (Test-IsAdministrator) {
-            $argumentList += 'InstallAllUsers=1'
-        }
-        else {
-            Write-Detail -Level 'WARN' -Message 'Keine Administratorrechte erkannt. Python wird fuer den aktuellen Benutzer installiert.'
-            $argumentList += 'InstallAllUsers=0'
+        return $pythonUrls
+    }
+
+    function Save-WebFile {
+        param(
+            [string[]]$Urls,
+            [string]$DestinationPath,
+            [psobject]$LogContext = $null
+        )
+
+        $destinationDirectory = Split-Path -Parent $DestinationPath
+        if (-not [string]::IsNullOrWhiteSpace($destinationDirectory)) {
+            New-DirectoryIfMissing -Path $destinationDirectory
         }
 
-        Write-Section -Message 'Installiere Python 3.13.x'
-        $process = Start-Process -FilePath $installerPath -ArgumentList $argumentList -Wait -PassThru
-        if ($process.ExitCode -notin 0, 3010) {
-            throw "Python 3.13.x konnte nicht installiert werden. Exitcode: $($process.ExitCode)"
+        foreach ($url in $Urls) {
+            if ([string]::IsNullOrWhiteSpace($url)) {
+                continue
+            }
+
+            try {
+                Write-Detail -Level 'INFO' -Message "Lade Installer herunter: $url"
+                Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Download gestartet: $url"
+                Invoke-WebRequest -Uri $url -OutFile $DestinationPath -UseBasicParsing
+                if ((Test-Path -Path $DestinationPath) -and ((Get-Item -Path $DestinationPath).Length -gt 0)) {
+                    Write-Detail -Level 'OK' -Message "Download erfolgreich: $DestinationPath"
+                    Write-ComponentLogEntry -Context $LogContext -Level 'OK' -Message "Download erfolgreich: $url -> $DestinationPath"
+                    return $DestinationPath
+                }
+            }
+            catch {
+                if (Test-Path -Path $DestinationPath) {
+                    Remove-Item -Path $DestinationPath -Force -ErrorAction SilentlyContinue
+                }
+
+                Write-Detail -Level 'WARN' -Message "Download fehlgeschlagen: $url ($($_.Exception.Message))"
+                Write-ComponentLogEntry -Context $LogContext -Level 'WARN' -Message "Download fehlgeschlagen: $url ($($_.Exception.Message))"
+            }
         }
 
-        if ($process.ExitCode -eq 3010) {
-            Write-Detail -Level 'WARN' -Message 'Python-Installer meldet einen Reboot-Hinweis (3010).'
+        throw "Keiner der konfigurierten Download-Links konnte erfolgreich geladen werden: $($Urls -join ', ')"
+    }
+
+    function Get-InstallerSource {
+        param(
+            [string]$ComponentName,
+            [string]$CacheSubPath,
+            [string]$PreferredFileName,
+            [string[]]$SearchPatterns,
+            [string]$ExplicitPath,
+            [string[]]$Urls,
+            [psobject]$LogContext = $null
+        )
+
+        $cacheDirectory = Join-Path $OfflineCacheRoot $CacheSubPath
+        New-DirectoryIfMissing -Path $cacheDirectory
+        $preferredCachePath = Join-Path $cacheDirectory $PreferredFileName
+
+        if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+            if (-not (Test-Path -Path $ExplicitPath)) {
+                throw "Explizit angegebener Installer fuer $ComponentName wurde nicht gefunden: $ExplicitPath"
+            }
+
+            if ((Resolve-Path -Path $ExplicitPath).Path -ne $preferredCachePath) {
+                Copy-Item -Path $ExplicitPath -Destination $preferredCachePath -Force
+                Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Expliziter Installer wurde in den Offline-Cache kopiert: $preferredCachePath"
+                return [pscustomobject]@{
+                    Path      = $preferredCachePath
+                    Source    = 'explicit-path-cached'
+                    CachePath = $preferredCachePath
+                }
+            }
+
+            return [pscustomobject]@{
+                Path      = $preferredCachePath
+                Source    = 'explicit-path'
+                CachePath = $preferredCachePath
+            }
         }
-        else {
-            Write-Detail -Level 'OK' -Message 'Python 3.13.x wurde installiert.'
+
+        if (Test-Path -Path $preferredCachePath) {
+            Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Installer aus Offline-Cache verwendet: $preferredCachePath"
+            return [pscustomobject]@{
+                Path      = $preferredCachePath
+                Source    = 'offline-cache'
+                CachePath = $preferredCachePath
+            }
+        }
+
+        foreach ($pattern in $SearchPatterns) {
+            $match = Get-ChildItem -Path $cacheDirectory -File -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($match) {
+                Copy-Item -Path $match.FullName -Destination $preferredCachePath -Force
+                Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Cache-Treffer fuer $ComponentName gefunden und auf Standardnamen vereinheitlicht: $preferredCachePath"
+                return [pscustomobject]@{
+                    Path      = $preferredCachePath
+                    Source    = 'offline-cache-pattern'
+                    CachePath = $preferredCachePath
+                }
+            }
+        }
+
+        if ($OfflineOnly) {
+            throw "OfflineOnly ist aktiv. Bitte den Installer fuer $ComponentName unter '$preferredCachePath' ablegen."
+        }
+
+        if (-not $Urls -or $Urls.Count -eq 0) {
+            throw "Fuer $ComponentName ist kein Download-Link konfiguriert. Bitte den Installer unter '$preferredCachePath' ablegen oder einen URL-/Pfad-Parameter setzen."
+        }
+
+        $downloadedPath = Save-WebFile -Urls $Urls -DestinationPath $preferredCachePath -LogContext $LogContext
+        return [pscustomobject]@{
+            Path      = $downloadedPath
+            Source    = 'downloaded-and-cached'
+            CachePath = $preferredCachePath
+        }
+    }
+
+    function Install-MsiPackage {
+        param(
+            [string]$MsiPath,
+            [string]$DisplayName
+        )
+
+        $logContext = New-ComponentLogContext -Component $DisplayName -Action 'install-msi'
+        $msiLogPath = [System.IO.Path]::ChangeExtension($logContext.LogPath, '.msi.log')
+
+        try {
+            if (-not (Test-IsAdministrator)) {
+                throw "Fuer die Installation von $DisplayName werden Administratorrechte benoetigt."
+            }
+
+            Write-Section -Message "Installiere $DisplayName"
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "MSI-Quelle: $MsiPath"
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "MSI-Detail-Log: $msiLogPath"
+
+            $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $MsiPath, '/qn', '/norestart', '/log', $msiLogPath) -Wait -PassThru
+            if ($process.ExitCode -notin 0, 3010) {
+                throw "$DisplayName konnte nicht installiert werden. Exitcode: $($process.ExitCode)"
+            }
+
+            if ($process.ExitCode -eq 3010) {
+                Write-Detail -Level 'WARN' -Message "$DisplayName meldet einen Reboot-Hinweis (3010)."
+                Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Installer meldet Reboot-Hinweis (3010).'
+                Complete-ComponentLog -Context $logContext -Outcome 'warning' -ExitCode $process.ExitCode -AdditionalFiles @($msiLogPath) -Notes @('RebootRequired')
+            }
+            else {
+                Write-Detail -Level 'OK' -Message "$DisplayName wurde installiert."
+                Write-ComponentLogEntry -Context $logContext -Level 'OK' -Message 'Installation erfolgreich.'
+                Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode $process.ExitCode -AdditionalFiles @($msiLogPath)
+            }
+
+            return [pscustomobject]@{
+                RebootRequired = ($process.ExitCode -eq 3010)
+                ExitCode       = $process.ExitCode
+                LogPath        = $logContext.LogPath
+                ExtraLogPath   = $msiLogPath
+            }
+        }
+        catch {
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -AdditionalFiles @($msiLogPath) -Notes @($_.Exception.Message)
+            throw
+        }
+    }
+
+    function Install-PythonRuntime {
+        $logContext = New-ComponentLogContext -Component 'Python 3.13.x' -Action 'install-exe'
+        try {
+            $installerSource = Get-InstallerSource -ComponentName 'Python 3.13.x' -CacheSubPath 'python' -PreferredFileName 'python-3.13-amd64.exe' -SearchPatterns @('python-3.13*.exe', 'python*.exe') -ExplicitPath $PythonInstallerPath -Urls (Get-PythonInstallerUrls) -LogContext $logContext
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Installerquelle: $($installerSource.Source)"
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Installerpfad: $($installerSource.Path)"
+
+            $argumentList = @('/quiet', 'PrependPath=1', 'Include_pip=1', 'Include_launcher=1', 'Shortcuts=0', 'CompileAll=0')
+            if (Test-IsAdministrator) {
+                $argumentList += 'InstallAllUsers=1'
+            }
+            else {
+                Write-Detail -Level 'WARN' -Message 'Keine Administratorrechte erkannt. Python wird fuer den aktuellen Benutzer installiert.'
+                Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Keine Administratorrechte erkannt. Installation erfolgt benutzerbezogen.'
+                $argumentList += 'InstallAllUsers=0'
+            }
+
+            Write-Section -Message 'Installiere Python 3.13.x'
+            $process = Start-Process -FilePath $installerSource.Path -ArgumentList $argumentList -Wait -PassThru
+            if ($process.ExitCode -notin 0, 3010) {
+                throw "Python 3.13.x konnte nicht installiert werden. Exitcode: $($process.ExitCode)"
+            }
+
+            Add-SetupCompletedAction -Action 'installer:python-runtime'
+
+            if ($process.ExitCode -eq 3010) {
+                Write-Detail -Level 'WARN' -Message 'Python-Installer meldet einen Reboot-Hinweis (3010).'
+                Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Installer meldet Reboot-Hinweis (3010).'
+                Complete-ComponentLog -Context $logContext -Outcome 'warning' -ExitCode $process.ExitCode -Notes @('RebootRequired')
+            }
+            else {
+                Write-Detail -Level 'OK' -Message 'Python 3.13.x wurde installiert.'
+                Write-ComponentLogEntry -Context $logContext -Level 'OK' -Message 'Installation erfolgreich.'
+                Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode $process.ExitCode
+            }
+
+            return [pscustomobject]@{
+                RebootRequired = ($process.ExitCode -eq 3010)
+                RebootReasons  = if ($process.ExitCode -eq 3010) { @('PythonInstaller:3010') } else { @() }
+            }
+        }
+        catch {
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
+            throw
         }
     }
 
     function Install-RequiredWindowsFeatures {
         param([object[]]$Statuses)
 
+        $result = [pscustomobject]@{
+            RebootRequired = $false
+            RebootReasons  = @()
+        }
+
         if (-not $InstallMissingRequiredComponents) {
-            return
+            return $result
         }
 
         if (-not (Test-CommandAvailable -CommandName 'Install-WindowsFeature')) {
             Write-Detail -Level 'WARN' -Message 'Install-WindowsFeature ist auf diesem Host nicht verfuegbar. Windows-Features konnten nicht automatisch installiert werden.'
-            return
+            return $result
         }
 
         if (-not (Test-IsAdministrator)) {
@@ -586,33 +1055,77 @@ try {
             Sort-Object InstallName -Unique
 
         foreach ($feature in $featureTargets) {
-            Write-Section -Message "Installiere Windows-Feature: $($feature.Component) ($($feature.InstallName))"
+            $logContext = New-ComponentLogContext -Component $feature.Component -Action 'install-windows-feature'
             try {
-                Install-WindowsFeature -Name $feature.InstallName -IncludeManagementTools -ErrorAction Stop | Out-Host
+                Write-Section -Message "Installiere Windows-Feature: $($feature.Component) ($($feature.InstallName))"
+                Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Install-WindowsFeature Name=$($feature.InstallName)"
+                $installResult = Install-WindowsFeature -Name $feature.InstallName -IncludeManagementTools -ErrorAction Stop
+                Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message (($installResult | Format-List * | Out-String).Trim())
+
+                $restartNeeded = $false
+                if ($null -ne $installResult.RestartNeeded) {
+                    $restartNeeded = [string]$installResult.RestartNeeded -ne 'No'
+                }
+
+                Add-SetupCompletedAction -Action ("feature:{0}" -f $feature.InstallName)
+
+                if ($restartNeeded) {
+                    $result.RebootRequired = $true
+                    $result.RebootReasons += "WindowsFeature:$($feature.InstallName)"
+                    Write-Detail -Level 'WARN' -Message "Windows-Feature $($feature.InstallName) meldet einen Reboot-Hinweis."
+                    Complete-ComponentLog -Context $logContext -Outcome 'warning' -ExitCode 3010 -Notes @('RebootRequired')
+                }
+                else {
+                    Write-Detail -Level 'OK' -Message "Windows-Feature $($feature.InstallName) wurde verarbeitet."
+                    Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode 0
+                }
             }
             catch {
                 Write-Detail -Level 'WARN' -Message "Windows-Feature $($feature.InstallName) konnte nicht automatisch installiert werden: $($_.Exception.Message)"
+                Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+                Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
             }
         }
+
+        $result.RebootReasons = @($result.RebootReasons | Sort-Object -Unique)
+        return $result
     }
 
     function Install-ExternalPrerequisitesIfNeeded {
         param([object[]]$Statuses)
 
+        $result = [pscustomobject]@{
+            RebootRequired = $false
+            RebootReasons  = @()
+        }
+
         if (-not $InstallMissingRequiredComponents) {
-            return
+            return $result
         }
 
         $pythonStatus = $Statuses | Where-Object { $_.Component -eq 'Python 3.13.x' } | Select-Object -First 1
         if ($pythonStatus -and (-not $pythonStatus.Present)) {
-            Install-PythonRuntime
+            $pythonInstallResult = Install-PythonRuntime
+            if ($pythonInstallResult.RebootRequired) {
+                $result.RebootRequired = $true
+                $result.RebootReasons += @($pythonInstallResult.RebootReasons)
+            }
         }
 
         $urlRewriteStatus = $Statuses | Where-Object { $_.Component -eq 'IIS URL Rewrite' } | Select-Object -First 1
         if ($urlRewriteStatus -and (-not $urlRewriteStatus.Present)) {
             try {
-                $rewriteInstaller = Save-WebFile -Urls @($UrlRewriteInstallerUrl) -DestinationFileName 'iis-url-rewrite.msi'
-                Install-MsiPackage -MsiPath $rewriteInstaller -DisplayName 'IIS URL Rewrite'
+                $rewriteSourceContext = New-ComponentLogContext -Component 'IIS URL Rewrite' -Action 'resolve-installer'
+                $rewriteInstaller = Get-InstallerSource -ComponentName 'IIS URL Rewrite' -CacheSubPath 'iis\url-rewrite' -PreferredFileName 'rewrite_amd64_en-US.msi' -SearchPatterns @('rewrite*.msi', '*url*rewrite*.msi') -ExplicitPath $UrlRewriteInstallerPath -Urls @($UrlRewriteInstallerUrl) -LogContext $rewriteSourceContext
+                Write-ComponentLogEntry -Context $rewriteSourceContext -Level 'OK' -Message "Installerquelle: $($rewriteInstaller.Source) / $($rewriteInstaller.Path)"
+                Complete-ComponentLog -Context $rewriteSourceContext -Outcome 'success' -ExitCode 0
+
+                $rewriteInstallResult = Install-MsiPackage -MsiPath $rewriteInstaller.Path -DisplayName 'IIS URL Rewrite'
+                Add-SetupCompletedAction -Action 'installer:iis-url-rewrite'
+                if ($rewriteInstallResult.RebootRequired) {
+                    $result.RebootRequired = $true
+                    $result.RebootReasons += 'IISUrlRewrite:3010'
+                }
             }
             catch {
                 Write-Detail -Level 'WARN' -Message "IIS URL Rewrite konnte nicht automatisch installiert werden: $($_.Exception.Message)"
@@ -621,16 +1134,28 @@ try {
 
         if ($InstallOptionalComponents) {
             $arrStatus = $Statuses | Where-Object { $_.Component -eq 'IIS Application Request Routing (ARR)' } | Select-Object -First 1
-            if ($arrStatus -and (-not $arrStatus.Present) -and (-not [string]::IsNullOrWhiteSpace($ArrInstallerUrl))) {
+            if ($arrStatus -and (-not $arrStatus.Present)) {
                 try {
-                    $arrInstaller = Save-WebFile -Urls @($ArrInstallerUrl) -DestinationFileName 'iis-arr.msi'
-                    Install-MsiPackage -MsiPath $arrInstaller -DisplayName 'IIS Application Request Routing (ARR)'
+                    $arrSourceContext = New-ComponentLogContext -Component 'IIS Application Request Routing (ARR)' -Action 'resolve-installer'
+                    $arrInstaller = Get-InstallerSource -ComponentName 'IIS Application Request Routing (ARR)' -CacheSubPath 'iis\arr' -PreferredFileName 'arr-x64.msi' -SearchPatterns @('*application*request*routing*.msi', '*arr*.msi') -ExplicitPath $ArrInstallerPath -Urls @($ArrInstallerUrl) -LogContext $arrSourceContext
+                    Write-ComponentLogEntry -Context $arrSourceContext -Level 'OK' -Message "Installerquelle: $($arrInstaller.Source) / $($arrInstaller.Path)"
+                    Complete-ComponentLog -Context $arrSourceContext -Outcome 'success' -ExitCode 0
+
+                    $arrInstallResult = Install-MsiPackage -MsiPath $arrInstaller.Path -DisplayName 'IIS Application Request Routing (ARR)'
+                    Add-SetupCompletedAction -Action 'installer:iis-arr'
+                    if ($arrInstallResult.RebootRequired) {
+                        $result.RebootRequired = $true
+                        $result.RebootReasons += 'ARR:3010'
+                    }
                 }
                 catch {
                     Write-Detail -Level 'WARN' -Message "ARR konnte nicht automatisch installiert werden: $($_.Exception.Message)"
                 }
             }
         }
+
+        $result.RebootReasons = @($result.RebootReasons | Sort-Object -Unique)
+        return $result
     }
 
     function Install-PythonDependencies {
@@ -648,40 +1173,153 @@ try {
             throw "Gefunden wurde Python $($PythonRuntime.Version). Fuer den vorgesehenen V2-Betrieb ist Python 3.13.x Pflicht. Mit -AllowUnsupportedPythonVersion kann der Schritt fuer lokale Sonderfaelle trotzdem erzwungen werden."
         }
 
-        $packageSpec = if ($WithDevDependencySet) { '.[dev]' } else { '.' }
-        $pipArgs = @()
-        $pipArgs += $PythonRuntime.Arguments
-        $pipArgs += '-m'
-        $pipArgs += 'pip'
-        $pipArgs += 'install'
-        $pipArgs += '-e'
-        $pipArgs += $packageSpec
+        $logContext = New-ComponentLogContext -Component 'Python Dependencies' -Action 'pip-install-editable'
+        try {
+            $packageSpec = if ($WithDevDependencySet) { '.[dev]' } else { '.' }
+            $pipArgs = @()
+            $pipArgs += $PythonRuntime.Arguments
+            $pipArgs += '-m'
+            $pipArgs += 'pip'
+            $pipArgs += 'install'
+            $pipArgs += '-e'
+            $pipArgs += $packageSpec
 
-        Write-Section -Message "Installiere Python-Abhaengigkeiten ueber $($PythonRuntime.Label)"
-        & $PythonRuntime.FilePath @pipArgs
+            Write-Section -Message "Installiere Python-Abhaengigkeiten ueber $($PythonRuntime.Label)"
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message ("Befehl: {0} {1}" -f $PythonRuntime.FilePath, ($pipArgs -join ' '))
+            & $PythonRuntime.FilePath @pipArgs 2>&1 | Tee-Object -FilePath $logContext.LogPath -Append | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                throw "pip install ist mit Exitcode $LASTEXITCODE fehlgeschlagen."
+            }
+
+            Add-SetupCompletedAction -Action 'python-dependencies'
+            Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode 0
+        }
+        catch {
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
+            throw
+        }
+    }
+
+    function Invoke-OfflineCachePreparation {
+        Start-SetupSession
+        Set-SetupPhase -Phase 'prepare-offline-cache'
+        Write-Section -Message 'Bereite Offline-Cache fuer produktive Server vor'
+
+        try {
+            $pythonCacheContext = New-ComponentLogContext -Component 'Python 3.13.x' -Action 'prepare-offline-cache'
+            $pythonInstaller = Get-InstallerSource -ComponentName 'Python 3.13.x' -CacheSubPath 'python' -PreferredFileName 'python-3.13-amd64.exe' -SearchPatterns @('python-3.13*.exe', 'python*.exe') -ExplicitPath $PythonInstallerPath -Urls (Get-PythonInstallerUrls) -LogContext $pythonCacheContext
+            Write-ComponentLogEntry -Context $pythonCacheContext -Level 'OK' -Message "Offline-Cache bereit: $($pythonInstaller.Path)"
+            Complete-ComponentLog -Context $pythonCacheContext -Outcome 'success' -ExitCode 0
+            Add-SetupCompletedAction -Action 'cache:python-runtime'
+        }
+        catch {
+            Write-Detail -Level 'WARN' -Message "Python-Installer konnte nicht fuer den Offline-Cache vorbereitet werden: $($_.Exception.Message)"
+        }
+
+        try {
+            $rewriteCacheContext = New-ComponentLogContext -Component 'IIS URL Rewrite' -Action 'prepare-offline-cache'
+            $rewriteInstaller = Get-InstallerSource -ComponentName 'IIS URL Rewrite' -CacheSubPath 'iis\url-rewrite' -PreferredFileName 'rewrite_amd64_en-US.msi' -SearchPatterns @('rewrite*.msi', '*url*rewrite*.msi') -ExplicitPath $UrlRewriteInstallerPath -Urls @($UrlRewriteInstallerUrl) -LogContext $rewriteCacheContext
+            Write-ComponentLogEntry -Context $rewriteCacheContext -Level 'OK' -Message "Offline-Cache bereit: $($rewriteInstaller.Path)"
+            Complete-ComponentLog -Context $rewriteCacheContext -Outcome 'success' -ExitCode 0
+            Add-SetupCompletedAction -Action 'cache:iis-url-rewrite'
+        }
+        catch {
+            Write-Detail -Level 'WARN' -Message "URL-Rewrite-Installer konnte nicht fuer den Offline-Cache vorbereitet werden: $($_.Exception.Message)"
+        }
+
+        try {
+            $arrCacheContext = New-ComponentLogContext -Component 'IIS Application Request Routing (ARR)' -Action 'prepare-offline-cache'
+            $arrInstaller = Get-InstallerSource -ComponentName 'IIS Application Request Routing (ARR)' -CacheSubPath 'iis\arr' -PreferredFileName 'arr-x64.msi' -SearchPatterns @('*application*request*routing*.msi', '*arr*.msi') -ExplicitPath $ArrInstallerPath -Urls @($ArrInstallerUrl) -LogContext $arrCacheContext
+            Write-ComponentLogEntry -Context $arrCacheContext -Level 'OK' -Message "Offline-Cache bereit: $($arrInstaller.Path)"
+            Complete-ComponentLog -Context $arrCacheContext -Outcome 'success' -ExitCode 0
+            Add-SetupCompletedAction -Action 'cache:iis-arr'
+        }
+        catch {
+            $expectedArrPath = Join-Path (Join-Path $OfflineCacheRoot 'iis\arr') 'arr-x64.msi'
+            Write-Detail -Level 'WARN' -Message "ARR konnte nicht automatisch vorbereitet werden. Lege den MSI-Installer manuell unter '$expectedArrPath' ab oder nutze -ArrInstallerPath / -ArrInstallerUrl."
+        }
+
+        Write-Detail -Level 'OK' -Message "Offline-Cache vorbereitet unter: $OfflineCacheRoot"
+        Set-SetupPhase -Phase 'prepare-offline-cache-complete'
+        Clear-SetupRebootPending
+        Clear-SetupStateFile
+    }
+
+    if ($CheckOnly -and $PrepareOfflineCache) {
+        throw 'Die Kombination aus -CheckOnly und -PrepareOfflineCache ist nicht sinnvoll. Bitte nur einen der beiden Modi verwenden.'
+    }
+
+    if ($PrepareOfflineCache) {
+        Invoke-OfflineCachePreparation
+        return
     }
 
     Write-Section -Message 'Pruefe Management-Server-Basis und V2-Abhaengigkeiten'
-    $setupState = Get-SetupStatus
-    Show-StatusTable -Statuses $setupState.Statuses
-    Show-RequiredStatusSummary -Statuses $setupState.Statuses
+    $setupStatus = Get-SetupStatus
+    Show-StatusTable -Statuses $setupStatus.Statuses
+    Show-RequiredStatusSummary -Statuses $setupStatus.Statuses
+
+    $pendingRebootState = Get-PendingRebootState
+    if ($pendingRebootState.IsPending) {
+        Write-Detail -Level 'WARN' -Message ('Es ist bereits ein ausstehender Neustart erkannt worden: ' + ($pendingRebootState.Reasons -join ', '))
+    }
 
     if ($CheckOnly) {
         Write-Detail -Level 'INFO' -Message 'CheckOnly aktiv: Es wurden keine Komponenten und keine Python-Abhaengigkeiten installiert.'
         return
     }
 
-    if ($InstallMissingRequiredComponents) {
-        Install-RequiredWindowsFeatures -Statuses $setupState.Statuses
-        Install-ExternalPrerequisitesIfNeeded -Statuses $setupState.Statuses
+    Start-SetupSession
+    Set-SetupPhase -Phase 'audit-complete'
 
-        Write-Section -Message 'Pruefe Status nach Installationsversuchen erneut'
-        $setupState = Get-SetupStatus
-        Show-StatusTable -Statuses $setupState.Statuses
-        Show-RequiredStatusSummary -Statuses $setupState.Statuses
+    if ($script:SetupState.PendingReboot) {
+        $currentPendingReboot = Get-PendingRebootState
+        if ($currentPendingReboot.IsPending) {
+            Stop-ForPendingReboot -Phase 'awaiting-reboot' -Reasons @($script:SetupState.PendingRebootReasons + $currentPendingReboot.Reasons)
+            return
+        }
+
+        Write-Detail -Level 'OK' -Message 'Vorher ausstehender Neustart ist nicht mehr erkannt. Das Setup wird automatisch fortgesetzt.'
+        Clear-SetupRebootPending
+    }
+    elseif ($pendingRebootState.IsPending) {
+        Stop-ForPendingReboot -Phase 'awaiting-preexisting-reboot' -Reasons $pendingRebootState.Reasons
+        return
     }
 
-    Install-PythonDependencies -PythonRuntime $setupState.PythonRuntime -WithDevDependencySet $WithDevDependencies.IsPresent -AllowUnsupportedVersion $AllowUnsupportedPythonVersion.IsPresent
+    if ($InstallMissingRequiredComponents) {
+        Set-SetupPhase -Phase 'install-required-windows-features'
+        $featureInstallResult = Install-RequiredWindowsFeatures -Statuses $setupStatus.Statuses
+        $pendingAfterFeatures = Get-PendingRebootState
+        if ($featureInstallResult.RebootRequired -or $pendingAfterFeatures.IsPending) {
+            $reasons = @($featureInstallResult.RebootReasons + $pendingAfterFeatures.Reasons)
+            Stop-ForPendingReboot -Phase 'post-feature-install' -Reasons $reasons
+            return
+        }
+
+        Set-SetupPhase -Phase 'install-external-prerequisites'
+        $externalInstallResult = Install-ExternalPrerequisitesIfNeeded -Statuses $setupStatus.Statuses
+        $pendingAfterExternal = Get-PendingRebootState
+        if ($externalInstallResult.RebootRequired -or $pendingAfterExternal.IsPending) {
+            $reasons = @($externalInstallResult.RebootReasons + $pendingAfterExternal.Reasons)
+            Stop-ForPendingReboot -Phase 'post-external-prerequisites' -Reasons $reasons
+            return
+        }
+
+        Write-Section -Message 'Pruefe Status nach Installationsversuchen erneut'
+        $setupStatus = Get-SetupStatus
+        Show-StatusTable -Statuses $setupStatus.Statuses
+        Show-RequiredStatusSummary -Statuses $setupStatus.Statuses
+    }
+
+    Set-SetupPhase -Phase 'install-python-dependencies'
+    Install-PythonDependencies -PythonRuntime $setupStatus.PythonRuntime -WithDevDependencySet $WithDevDependencies.IsPresent -AllowUnsupportedVersion $AllowUnsupportedPythonVersion.IsPresent
+
+    Set-SetupPhase -Phase 'completed'
+    Clear-SetupRebootPending
+    Clear-SetupStateFile
+    Write-Detail -Level 'OK' -Message "Setup abgeschlossen. Komponenten-Logs liegen unter: $script:CurrentLogSessionDir"
 }
 finally {
     Pop-Location

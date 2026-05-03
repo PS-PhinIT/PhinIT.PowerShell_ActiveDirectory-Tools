@@ -46,6 +46,8 @@ Nützliche Varianten:
 - fehlende Pflichtkomponenten automatisch installieren: `./setup_dev.ps1`
 - fehlende Pflichtkomponenten nicht automatisch installieren: `./setup_dev.ps1 -InstallMissingRequiredComponents:$false`
 - optionale Komponenten wie ARR zusätzlich berücksichtigen: `./setup_dev.ps1 -InstallOptionalComponents:$true -ArrInstallerUrl <URL>`
+- nur aus dem vorbereiteten Offline-Cache installieren: `./setup_dev.ps1 -OfflineOnly`
+- Offline-Cache für produktive Server vorbereiten: `./setup_dev.ps1 -PrepareOfflineCache`
 - lokale Sonderfälle mit nicht Ziel-konformer Python-Version erzwingen: `./setup_dev.ps1 -AllowUnsupportedPythonVersion`
 
 ## Automatische Installation bei fehlendem Python
@@ -63,6 +65,10 @@ Optional kann ein fester Installer-Link vorgegeben werden:
 
 - `./setup_dev.ps1 -PythonInstallerUrl <URL>`
 
+Optional kann auch ein lokaler Installerpfad vorgegeben werden:
+
+- `./setup_dev.ps1 -PythonInstallerPath <PFAD>`
+
 ## Automatische Installation von Rollen und Features
 
 Fehlende Pflichtrollen und Pflichtfeatures werden jetzt ebenfalls schrittweise nachinstalliert, sofern:
@@ -79,6 +85,87 @@ Typische automatische Kandidaten sind:
 - ggf. `.NET Framework`-Featurekomponenten
 
 Zusätzlich versucht das Skript bei fehlendem `IIS URL Rewrite`, den MSI-Installer automatisch herunterzuladen und still zu installieren.
+
+## Reboot-Erkennung und Fortsetzung
+
+Wenn eine Installation einen Neustart auslöst oder bereits ein ausstehender Neustart erkannt wird, stoppt `setup_dev.ps1` jetzt kontrolliert und legt eine State-Datei an.
+
+Standardverhalten:
+
+- Statusdatei: `logs/setup/setup-state.json`
+- Fortsetzung erfolgt automatisch beim nächsten Start von `./setup_dev.ps1`
+- letzte Phase und Reboot-Gründe werden in der State-Datei festgehalten
+- nach erfolgreichem Abschluss wird die State-Datei wieder entfernt
+
+Typische Reboot-Erkennungen:
+
+- `Component Based Servicing`
+- `Windows Update`
+- `PendingFileRenameOperations`
+- Exitcode `3010` von MSI-/Installer-Prozessen
+
+Praktischer Ablauf:
+
+1. `./setup_dev.ps1`
+2. Skript meldet Reboot-Bedarf und beendet den Lauf kontrolliert.
+3. Server neu starten.
+4. `./setup_dev.ps1` erneut starten.
+5. Das Skript erkennt die Fortsetzung automatisch.
+
+## Saubere Install-Logs pro Komponente
+
+Jede Installations- oder Cache-Aktion schreibt jetzt eigene Logs pro Komponente.
+
+Standardpfad:
+
+- `logs/setup/<run-id>/...`
+
+Beispiele:
+
+- `logs/setup/setup-20260503-101500/Python-3.13.x/...`
+- `logs/setup/setup-20260503-101500/IIS-URL-Rewrite/...`
+- `logs/setup/setup-20260503-101500/IIS-Web-Server/...`
+
+Pro Aktion entstehen in der Regel:
+
+- eine `.log`-Datei mit Ablauf und Meldungen
+- eine `.json`-Datei mit Metadaten, Ergebnis und Exitcode
+- bei MSI-Installationen zusätzlich eine `.msi.log`-Datei
+
+## Feste Offline-Cache-Strategie für produktive Server
+
+Für produktive oder abgeschottete Server nutzt das Setup jetzt standardmäßig einen festen Cache-first-Ansatz.
+
+Standardstruktur:
+
+- `setup-cache/python/python-3.13-amd64.exe`
+- `setup-cache/iis/url-rewrite/rewrite_amd64_en-US.msi`
+- `setup-cache/iis/arr/arr-x64.msi`
+
+Suchreihenfolge pro Installer:
+
+1. explizit angegebener lokaler Pfad (`-...InstallerPath`)
+2. standardisierter Offline-Cache unter `setup-cache/...`
+3. ähnliche Dateinamen im Cache-Ordner
+4. Download und Ablage in den Cache, sofern **nicht** `-OfflineOnly` gesetzt ist
+
+Empfohlener produktiver Ablauf:
+
+1. Auf einem System mit Internetzugang Cache vorbereiten:
+	- `./setup_dev.ps1 -PrepareOfflineCache`
+2. Optional ARR lokal ergänzen:
+	- `./setup_dev.ps1 -PrepareOfflineCache -ArrInstallerPath <PFAD-ZUR-ARR-MSI>`
+3. Ordner `setup-cache` auf den Zielserver kopieren.
+4. Installation auf dem Zielserver offline ausführen:
+	- `./setup_dev.ps1 -OfflineOnly`
+
+Wichtige Zusatzparameter:
+
+- `-PythonInstallerPath <PFAD>`
+- `-UrlRewriteInstallerPath <PFAD>`
+- `-ArrInstallerPath <PFAD>`
+- `-OfflineCacheRoot <PFAD>`
+- `-ComponentLogRoot <PFAD>`
 
 ### 2. Entwicklungsserver starten
 
