@@ -1,0 +1,160 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row g-4">
+    <div class="col-12 col-xl-8">
+        <section class="content-card h-100">
+            <div class="section-header">
+                <div>
+                    <h3>Offboarding Wizard – Sensitive Request Builder</h3>
+                    <p class="text-secondary mb-0">Serverseitig validierter Abschaltfluss für Austritt, Übergabe und spätere Connector-Orchestrierung.</p>
+                </div>
+                <span class="badge text-bg-danger">Sensitive Flow</span>
+            </div>
+
+            {% if submission_result %}
+            <div class="app-alert app-alert-success mt-4">
+                <div>
+                    <strong>{{ submission_result.title }}</strong>
+                    <p class="mb-0 mt-1">{{ submission_result.message }}</p>
+                    {% if submission_result.job_id %}
+                    <p class="mb-0 mt-1 text-secondary">Job: <code>{{ submission_result.job_id }}</code> · Status: <strong>{{ submission_result.job_status }}</strong></p>
+                    {% endif %}
+                </div>
+                <span class="badge text-bg-success">{{ submission_result.correlation_id }}</span>
+            </div>
+            {% endif %}
+
+            {% if form_errors %}
+            <div class="app-alert app-alert-danger mt-4">
+                <div>
+                    <strong>Bitte Sicherheitslogik prüfen</strong>
+                    <ul class="mb-0 mt-2">
+                        {% for error in form_errors %}
+                        <li>{{ error }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            {% endif %}
+
+            <form method="post" action="/processes/offboarding" class="mt-4">
+                <div class="form-grid">
+                    <div>
+                        <label for="display_name" class="form-label">Benutzer / Anzeigename</label>
+                        <input id="display_name" name="display_name" class="form-control" value="{{ form_values.get('display_name', '') }}" required>
+                        {% for error in field_errors.get('display_name', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="primary_mail" class="form-label">Primäre E-Mail</label>
+                        <input id="primary_mail" name="primary_mail" type="email" class="form-control" value="{{ form_values.get('primary_mail', '') }}" required>
+                        {% for error in field_errors.get('primary_mail', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="department" class="form-label">Abteilung</label>
+                        <input id="department" name="department" class="form-control" value="{{ form_values.get('department', '') }}" required>
+                        {% for error in field_errors.get('department', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="manager_display_name" class="form-label">Verantwortlicher Manager</label>
+                        <input id="manager_display_name" name="manager_display_name" class="form-control" value="{{ form_values.get('manager_display_name', '') }}" required>
+                        {% for error in field_errors.get('manager_display_name', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="exit_date" class="form-label">Austrittsdatum</label>
+                        <input id="exit_date" name="exit_date" type="date" class="form-control" value="{{ form_values.get('exit_date', '') }}" required>
+                        {% for error in field_errors.get('exit_date', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="exit_type" class="form-label">Austrittsart</label>
+                        <select id="exit_type" name="exit_type" class="form-select" required>
+                            {% for exit_type in exit_types %}
+                            <option value="{{ exit_type.value }}" {% if form_values.get('exit_type') == exit_type.value %}selected{% endif %}>{{ exit_type.label }}</option>
+                            {% endfor %}
+                        </select>
+                        {% for error in field_errors.get('exit_type', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="forward_mail_to" class="form-label">Mail-Weiterleitung an</label>
+                        <input id="forward_mail_to" name="forward_mail_to" type="email" class="form-control" value="{{ form_values.get('forward_mail_to', '') }}">
+                        {% for error in field_errors.get('forward_mail_to', []) %}<div class="field-error">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div>
+                        <label for="mailbox_access_delegate" class="form-label">Mailbox-Delegation</label>
+                        <input id="mailbox_access_delegate" name="mailbox_access_delegate" class="form-control" value="{{ form_values.get('mailbox_access_delegate', '') }}">
+                    </div>
+                </div>
+
+                <div class="choice-card mt-4 danger">
+                    <h4>Sicherheits- und Übergabeschritte</h4>
+                    <div class="form-check-grid mt-3">
+                        <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="disable_sign_in_immediately" {% if form_values.get('disable_sign_in_immediately') %}checked{% endif %}>
+                            <span class="form-check-label">Anmeldung sofort sperren</span>
+                        </label>
+                        <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="collect_assets" {% if form_values.get('collect_assets') %}checked{% endif %}>
+                            <span class="form-check-label">Assets und Tokens einsammeln</span>
+                        </label>
+                        <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="wipe_mobile_device" {% if form_values.get('wipe_mobile_device') %}checked{% endif %}>
+                            <span class="form-check-label">Mobiles Gerät remote zurücksetzen</span>
+                        </label>
+                        <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="preserve_home_drive" {% if form_values.get('preserve_home_drive') %}checked{% endif %}>
+                            <span class="form-check-label">Home-Drive für Übergabe sichern</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-3 mt-4">
+                    <button type="submit" class="btn btn-primary">Sensitiven Dry-Run vorbereiten</button>
+                    <span class="inline-help">Validierung prüft bereits kritische Kombinationen, z. B. Sofort-Austritt ohne Sofortsperre.</span>
+                </div>
+            </form>
+
+            <div class="step-list mt-4">
+                {% for step in steps %}
+                <article class="step-card danger">
+                    <div class="step-number">{{ loop.index }}</div>
+                    <div>
+                        <strong>{{ step }}</strong>
+                        <p class="mb-0 text-secondary">Spätere Anbindung an AD, M365, Fileserver, Ticketing und Asset-Rückgabe.</p>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+
+    <div class="col-12 col-xl-4">
+        <section class="content-card h-100">
+            {% include 'partials/context_help_links.html' %}
+
+            {% if submission_result %}
+            <h3>Dry-Run Ergebnis</h3>
+            <ul class="summary-list mt-3 mb-4">
+                {% for label, value in submission_result.summary_rows %}
+                <li><span>{{ label }}</span><strong>{{ value }}</strong></li>
+                {% endfor %}
+            </ul>
+            <h4 class="subsection-title">Nächste technische Schritte</h4>
+            <ul class="list-unstyled text-secondary mt-3 mb-4">
+                {% for item in submission_result.next_actions %}
+                <li class="mb-2">• {{ item }}</li>
+                {% endfor %}
+            </ul>
+            <div class="code-panel"><pre>{{ submission_result.contract_payload_pretty }}</pre></div>
+            {% else %}
+            <h3>Kritische Prüfpunkte</h3>
+            <ul class="list-unstyled text-secondary mt-3 mb-0">
+                <li class="mb-2">• privilegierte Gruppen und Sonderrechte</li>
+                <li class="mb-2">• Mailbox-Weiterleitung und Datenübergabe</li>
+                <li class="mb-2">• Geräte, Tokens und Rückgabeprotokolle</li>
+                <li class="mb-2">• vollständiger Audit-Abschlussbericht</li>
+            </ul>
+            {% endif %}
+        </section>
+    </div>
+</div>
+{% endblock %}

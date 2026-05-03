@@ -1,0 +1,113 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="content-card mb-4">
+    <div class="section-header">
+        <div>
+            <h3>Benutzerübersicht und AD-Suche</h3>
+            <p class="text-secondary mb-0">Erster produktiver AD-Core-Baustein: echte Benutzersuche über einen PowerShell-Connector mit Jobpersistenz und Ergebnisprotokoll.</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="/jobs" class="btn btn-outline-light">Jobs ansehen</a>
+            <a href="/documentation?doc=03_MODULES/User_Overview_Module.md" class="btn btn-primary">Moduldoku</a>
+        </div>
+    </div>
+
+    <form method="get" action="/users" class="mt-4">
+        <div class="form-grid">
+            <div>
+                <label for="q" class="form-label">Suchbegriff</label>
+                <input id="q" name="q" class="form-control" value="{{ search_query }}" placeholder="Name, SAM, UPN oder Mail" required>
+            </div>
+        </div>
+
+        <div class="d-flex flex-wrap gap-3 mt-4">
+            <button type="submit" class="btn btn-primary">AD-Benutzer suchen</button>
+            <span class="inline-help">Die Suche nutzt den produktiven PowerShell-Runner und legt einen nachverfolgbaren Job in SQLite ab.</span>
+        </div>
+    </form>
+
+    {% if form_errors %}
+    <div class="app-alert app-alert-danger mt-4">
+        <div>
+            <strong>Suchbegriff prüfen</strong>
+            <ul class="mb-0 mt-2">
+                {% for error in form_errors %}
+                <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if search_result %}
+    <div class="app-alert {% if search_result.success %}app-alert-success{% else %}app-alert-danger{% endif %} mt-4">
+        <div>
+            <strong>{{ search_result.message }}</strong>
+            <p class="mb-0 mt-1">Job: <code>{{ search_result.job_id or 'n/a' }}</code> · Status: <strong>{{ search_result.status }}</strong>{% if search_result.exit_code is not none %} · Exitcode: <strong>{{ search_result.exit_code }}</strong>{% endif %}</p>
+        </div>
+        <span class="badge {% if search_result.success %}text-bg-success{% else %}text-bg-danger{% endif %}">{{ search_result.count }} Treffer</span>
+    </div>
+
+    {% if search_result.warnings %}
+    <div class="choice-card mt-3">
+        <h4>Hinweise</h4>
+        <ul class="text-secondary mt-3 mb-0">
+            {% for warning in search_result.warnings %}
+            <li>{{ warning }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if search_result.errors %}
+    <div class="choice-card danger mt-3">
+        <h4>Fehlerbild</h4>
+        <ul class="text-secondary mt-3 mb-0">
+            {% for error in search_result.errors %}
+            <li>{{ error }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    {% if users %}
+    <div class="table-responsive mt-4">
+        <table class="table table-dark align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>SAM</th>
+                    <th>Status</th>
+                    <th>Abteilung</th>
+                    <th>Standort</th>
+                    <th>E-Mail</th>
+                    <th>UPN</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user.display_name }}</td>
+                    <td>{{ user.sam_account_name }}</td>
+                    <td><span class="badge rounded-pill {% if user.enabled %}text-bg-success{% else %}text-bg-danger{% endif %}">{{ 'Enabled' if user.enabled else 'Disabled' }}</span></td>
+                    <td>{{ user.department }}</td>
+                    <td>{{ user.location }}</td>
+                    <td>{{ user.primary_mail }}</td>
+                    <td>{{ user.user_principal_name }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% elif search_query and not form_errors %}
+    <div class="empty-state-panel mt-4">
+        <h3>Keine Treffer sichtbar</h3>
+        <p class="text-secondary mb-0">Die Suche wurde ausgeführt, lieferte aber aktuell keine anzeigbaren Benutzerobjekte zurück.</p>
+    </div>
+    {% endif %}
+</section>
+
+{% include 'partials/context_help_links.html' %}
+{% endblock %}

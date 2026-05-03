@@ -1,0 +1,26 @@
+{
+  "id": "lifecycle.onboarding",
+  "display_name": "Lifecycle Onboarding",
+  "category": "lifecycle",
+  "version": "0.1.0",
+  "status": "prototype",
+  "owner": "IAM Team",
+  "ui_sections": [
+    "dashboard",
+    "processes.onboarding"
+  ],
+  "permissions": [
+    "lifecycle.onboarding.view",
+    "lifecycle.onboarding.start"
+  ],
+  "actions": [
+    "preview_onboarding",
+    "start_onboarding",
+    "create_follow_up_tasks"
+  ],
+  "dependencies": [
+    "core.foundation",
+    "core.runner_ps51",
+    "identity.ad.users"
+  ]
+}

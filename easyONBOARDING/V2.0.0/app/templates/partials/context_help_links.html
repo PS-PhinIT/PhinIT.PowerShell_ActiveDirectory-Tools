@@ -1,0 +1,20 @@
+{% if help_links %}
+<div class="context-help-card mt-4">
+    <div class="section-header">
+        <div>
+            <h3>Kontext-Hilfe</h3>
+            <p class="text-secondary mb-0">Direkte Sprungmarken in die passende V2-Dokumentation für diesen Bereich.</p>
+        </div>
+        <a href="/documentation" class="btn btn-outline-light btn-sm">Dokubrowser</a>
+    </div>
+
+    <div class="help-link-list mt-3">
+        {% for link in help_links %}
+        <a href="{{ link.href }}" class="help-link-tile">
+            <strong>{{ link.label }}</strong>
+            <span>{{ link.description }}</span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
