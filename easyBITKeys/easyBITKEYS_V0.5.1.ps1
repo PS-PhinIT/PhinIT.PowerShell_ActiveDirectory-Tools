@@ -1,6 +1,4 @@
-# filepath: c:\Users\PhinITAndreasHepp\OneDrive - PhinIT\05-Administratives\10-Scripte\PowerShell\# EASYit\easyBITkeys\easyBITKEYS_V0.1.0.ps1
-# ---------------------------------------------------------------------
-# Author: ANDREAS HEPP
+# Author: ANDREAS HEPP | www.phinit.de
 # 
 # This script reads all BitLocker Keys (msFVE-RecoveryInformation) from Active Directory
 # and displays them in a color-coded GUI.
@@ -30,9 +28,9 @@
 # Diese Konfigurationswerte sollten am Anfang des Skripts stehen.
 
 # Allgemeine Skriptinformationen
-$ScriptVersion   = "0.5.2"
+$ScriptVersion   = "0.5.3"
 $LastUpdate      = "2026-06-09" # Datum der letzten Aktualisierung
-$Author          = "ANDREAS HEPP"
+$Author          = "ANDREAS HEPP | www.phinit.de"
 $APPName         = "easyBITKEYS"
 $APPDescription  = "easyBITKEYS displays BitLocker keys from Active Directory in a color-coded manner."
 
@@ -40,8 +38,7 @@ $APPDescription  = "easyBITKEYS displays BitLocker keys from Active Directory in
 $ThemeColor      = "#164360" # Hauptfarbe für Header/Footer (Hex-Code)
 $FontFamily      = "Segoe UI" # Standard-Schriftart für die GUI
 $FontSize        = [float]12   # Standard-Schriftgröße für die GUI
-$ConfigHeaderLogoFileName = "APPICON.png"  # Dateiname für das Logo im Header. Muss sich im selben Verzeichnis wie das Skript befinden oder einen relativen/absoluten Pfad haben. Wenn leer, wird kein Logo angezeigt.
-$HeaderLogoURL   = "" # Optional: Wenn leer, wird keine externe URL geöffnet.
+# GUI läuft vollständig ohne externe Assets (Logo/Icons/URLs)
 
 # Debug-Modus (0 = Aus, 1 = An) - Stellen Sie sicher, dass die Write-DebugMessage Funktion existiert
 $global:DebugMode = 0 # Standardmäßig deaktiviert
@@ -187,21 +184,7 @@ if ($PSVersionTable.PSVersion.Major -ne 5) {
 # Self-Diagnostic at startup
 function Test-Requirements {
     try {
-        # Check if all icons in assets folder exist
-        $assetsPath = Join-Path $script:ScriptRoot "assets"
-        $requiredIcons = @("info.png", "close.png")
-        
-        if (-not (Test-Path $assetsPath)) {
-            Write-Log -Message "Assets folder not found: $assetsPath. Fallback icons will be used." -Level WARN
-        }
-        else {
-            foreach ($icon in $requiredIcons) {
-                $iconPath = Join-Path $assetsPath $icon
-                if (-not (Test-Path $iconPath)) {
-                    Write-Log -Message "Icon not found: $iconPath. Fallback icon will be used." -Level WARN
-                }
-            }
-        }
+        # Keine Asset-Prüfung notwendig: GUI verwendet keine externen Logo-/Icon-Dateien
         
         # Check if ActiveDirectory module is available
         if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
@@ -419,7 +402,6 @@ $xamlString = @'
                  <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel
                     Grid.Column="0"
@@ -441,19 +423,6 @@ $xamlString = @'
                             Text="Version $ScriptVersion" />
                     </StackPanel>
                 </StackPanel>
-
-                <Border
-                    Grid.Column="2"
-                    Width="150"
-                    Height="50"
-                    Margin="0,0,0,0"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Center">
-                    <Image
-                        x:Name="headerLogo"
-                        Cursor="Hand"
-                        Stretch="Uniform" />
-                </Border>
             </Grid>
         </Border>
 
@@ -559,21 +528,13 @@ $xamlString = @'
                         <Button
                             x:Name="btnInfo"
                             Style="{StaticResource SmallIconButton}"
-                            ToolTip="Information">
-                            <Image
-                                x:Name="infoIcon"
-                                Width="20"
-                                Height="20" />
-                        </Button>
+                            ToolTip="Information"
+                            Content="i" />
                         <Button
                             x:Name="btnExit"
                             Style="{StaticResource SmallIconButton}"
-                            ToolTip="Close Application">
-                            <Image
-                                x:Name="closeIcon"
-                                Width="20"
-                                Height="20" />
-                        </Button>
+                            ToolTip="Close Application"
+                            Content="X" />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -813,7 +774,6 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 $headerBorder = $window.FindName("headerBorder")
 $headerTitle = $window.FindName("headerTitle")
 $headerSubtitle = $window.FindName("headerSubtitle")
-$headerLogo = $window.FindName("headerLogo")
 $footerBorder = $window.FindName("footerBorder")
 $versionText = $window.FindName("versionText")
 $dataGrid = $window.FindName("dataGrid")
@@ -821,8 +781,6 @@ $btnRefresh = $window.FindName("btnRefresh")
 $btnCopyKey = $window.FindName("btnCopyKey")
 $btnExport = $window.FindName("btnExport")
 $btnDelete = $window.FindName("btnDelete")
-$infoIcon = $window.FindName("infoIcon")
-$closeIcon = $window.FindName("closeIcon")
 $btnInfo = $window.FindName("btnInfo")
 $btnExit = $window.FindName("btnExit")
 
@@ -877,91 +835,13 @@ try {
         $versionText.Text = $versionString 
         Write-DebugMessage -Message "Set version text to '$versionString'"
     }
-    
-    # Load logo
-    if ($null -ne $headerLogo) {
-        if (-not ([string]::IsNullOrEmpty($ConfigHeaderLogoFileName))) { 
-            $logoFileOrPathFromConfig = $ConfigHeaderLogoFileName 
-            
-            $resolvedLogoPath = $logoFileOrPathFromConfig
-            # If the configured path isn't absolute, assume it's relative to the script's root directory
-            if (-not ([System.IO.Path]::IsPathRooted($logoFileOrPathFromConfig))) {
-                $resolvedLogoPath = Join-Path $script:ScriptRoot $logoFileOrPathFromConfig
-            }
 
-            if (Test-Path $resolvedLogoPath) {
-                try {
-                    $headerImage = New-Object System.Windows.Media.Imaging.BitmapImage
-                    $headerImage.BeginInit()
-                    # BitmapImage requires an absolute URI. $resolvedLogoPath should be absolute here.
-                    $uri = New-Object System.Uri($resolvedLogoPath, [System.UriKind]::Absolute)
-                    $headerImage.UriSource = $uri
-                    $headerImage.EndInit()
-                    $headerLogo.Source = $headerImage # Set the source of the XAML Image control
-                    Write-DebugMessage -Message "Loaded header logo from '$resolvedLogoPath'"
-                } catch {
-                    Write-Log -Message "Error creating image object for logo. Configured: '$logoFileOrPathFromConfig', Resolved: '$resolvedLogoPath'. Error: $($_.Exception.Message)" -Level ERROR
-                }
-            }
-            else {
-                Write-Log -Message "Logo file (configured as '$logoFileOrPathFromConfig') not found. Attempted to load from '$resolvedLogoPath'." -Level WARN
-                $headerLogo.Visibility = [System.Windows.Visibility]::Collapsed
-            }
-        }
-        else {
-            Write-DebugMessage -Message "Configuration for header logo file/path ('$ConfigHeaderLogoFileName') is empty. Skipping logo load."
-            $headerLogo.Visibility = [System.Windows.Visibility]::Collapsed
-        }
-    }
-    else {
-        # This case means $window.FindName("headerLogo") returned null.
-        Write-Log -Message "XAML Image element for the header logo (expected name 'headerLogo') was not found in the window." -Level WARN
-    }
-    # Load icons
-    $iconsPath = Join-Path $script:ScriptRoot "assets"
-    $infoIconLoaded = $false
-    $closeIconLoaded = $false
-    
-    # Load info icon
-    if ($null -ne $infoIcon) {
-        $infoIconPath = Join-Path $iconsPath "info.png"
-        if (Test-Path $infoIconPath) {
-            $infoImage = New-Object System.Windows.Media.Imaging.BitmapImage
-            $infoImage.BeginInit()
-            $infoImage.UriSource = New-Object System.Uri($infoIconPath)
-            $infoImage.EndInit()
-            $infoIcon.Source = $infoImage
-            $infoIconLoaded = $true
-            Write-DebugMessage -Message "Loaded info icon from $infoIconPath"
-        }
-        else {
-            Write-Log -Message "Info icon not found: $infoIconPath. Using text fallback." -Level WARN
-        }
-    }
-    
-    # Load close icon
-    if ($null -ne $closeIcon) {
-        $closeIconPath = Join-Path $iconsPath "close.png"
-        if (Test-Path $closeIconPath) {
-            $closeImage = New-Object System.Windows.Media.Imaging.BitmapImage
-            $closeImage.BeginInit()
-            $closeImage.UriSource = New-Object System.Uri($closeIconPath)
-            $closeImage.EndInit()
-            $closeIcon.Source = $closeImage
-            $closeIconLoaded = $true
-            Write-DebugMessage -Message "Loaded close icon from $closeIconPath"
-        }
-        else {
-            Write-Log -Message "Close icon not found: $closeIconPath. Using text fallback." -Level WARN
-        }
-    }
-
-    if (-not $infoIconLoaded -and $null -ne $btnInfo) {
+    if ($null -ne $btnInfo) {
         $btnInfo.Content = "i"
         $btnInfo.FontWeight = [System.Windows.FontWeights]::Bold
     }
 
-    if (-not $closeIconLoaded -and $null -ne $btnExit) {
+    if ($null -ne $btnExit) {
         $btnExit.Content = "X"
         $btnExit.FontWeight = [System.Windows.FontWeights]::Bold
     }
@@ -973,33 +853,7 @@ catch {
 #endregion
 
 #region Event Handlers for Navigation
-# Event handler for logo click
-if ($null -ne $headerLogo -and -not [string]::IsNullOrWhiteSpace($HeaderLogoURL)) {
-    $headerLogo.AddHandler([System.Windows.Controls.Image]::MouseLeftButtonDownEvent, [System.Windows.Input.MouseButtonEventHandler]{
-        try {
-            Write-DebugMessage -Message "Header logo clicked, opening URL: $HeaderLogoURL"
-            Start-Process $HeaderLogoURL
-        }
-        catch {
-            Write-Log -Message "Error opening URL $HeaderLogoURL : $_" -Level ERROR
-        }
-    })
-}
-
-# Event handler for footer click
-# if ($null -ne $footerText) {
-#    $footerText.Add_MouseLeftButtonDown({
-#        try {
-#            Write-DebugMessage -Message "Footer text clicked, opening URL: $HeaderLogoURL"
-#            Start-Process $HeaderLogoURL
-#        }
-#        catch {
-#            Write-Log -Message "Error opening URL $HeaderLogoURL - $_" -Level ERROR
-#        }
-#    })
-#    # Set cursor style to indicate clickable text
-#    $footerText.Cursor = [System.Windows.Input.Cursors]::Hand
-# }
+# Keine externen URL-/Asset-Handler notwendig.
 #endregion
 
 #region ActiveDirectory Integration
@@ -1734,223 +1588,3 @@ $window.Title = $APPName
 Write-DebugMessage -Message "Starting GUI display"
 [void]$window.ShowDialog()
 #endregion
-
-# SIG # Begin signature block
-# MIIoiQYJKoZIhvcNAQcCoIIoejCCKHYCAQExDzANBglghkgBZQMEAgEFADB5Bgor
-# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAw1LQou/0y7QYU
-# DXzLRe3cG6ngWy3GJ2VMOLfFgyKIoqCCILswggXJMIIEsaADAgECAhAbtY8lKt8j
-# AEkoya49fu0nMA0GCSqGSIb3DQEBDAUAMH4xCzAJBgNVBAYTAlBMMSIwIAYDVQQK
-# ExlVbml6ZXRvIFRlY2hub2xvZ2llcyBTLkEuMScwJQYDVQQLEx5DZXJ0dW0gQ2Vy
-# dGlmaWNhdGlvbiBBdXRob3JpdHkxIjAgBgNVBAMTGUNlcnR1bSBUcnVzdGVkIE5l
-# dHdvcmsgQ0EwHhcNMjEwNTMxMDY0MzA2WhcNMjkwOTE3MDY0MzA2WjCBgDELMAkG
-# A1UEBhMCUEwxIjAgBgNVBAoTGVVuaXpldG8gVGVjaG5vbG9naWVzIFMuQS4xJzAl
-# BgNVBAsTHkNlcnR1bSBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTEkMCIGA1UEAxMb
-# Q2VydHVtIFRydXN0ZWQgTmV0d29yayBDQSAyMIICIjANBgkqhkiG9w0BAQEFAAOC
-# Ag8AMIICCgKCAgEAvfl4+ObVgAxknYYblmRnPyI6HnUBfe/7XGeMycxca6mR5rlC
-# 5SBLm9qbe7mZXdmbgEvXhEArJ9PoujC7Pgkap0mV7ytAJMKXx6fumyXvqAoAl4Va
-# qp3cKcniNQfrcE1K1sGzVrihQTib0fsxf4/gX+GxPw+OFklg1waNGPmqJhCrKtPQ
-# 0WeNG0a+RzDVLnLRxWPa52N5RH5LYySJhi40PylMUosqp8DikSiJucBb+R3Z5yet
-# /5oCl8HGUJKbAiy9qbk0WQq/hEr/3/6zn+vZnuCYI+yma3cWKtvMrTscpIfcRnNe
-# GWJoRVfkkIJCu0LW8GHgwaM9ZqNd9BjuiMmNF0UpmTJ1AjHuKSbIawLmtWJFfzcV
-# WiNoidQ+3k4nsPBADLxNF8tNorMe0AZa3faTz1d1mfX6hhpneLO/lv403L3nUlbl
-# s+V1e9dBkQXcXWnjlQ1DufyDljmVe2yAWk8TcsbXfSl6RLpSpCrVQUYJIP4ioLZb
-# MI28iQzV13D4h1L92u+sUS4Hs07+0AnacO+Y+lbmbdu1V0vc5SwlFcieLnhO+Nqc
-# noYsylfzGuXIkosagpZ6w7xQEmnYDlpGizrrJvojybawgb5CAKT41v4wLsfSRvbl
-# jnX98sy50IdbzAYQYLuDNbdeZ95H7JlI8aShFf6tjGKOOVVPORa5sWOd/7cCAwEA
-# AaOCAT4wggE6MA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFLahVDkCw6A/joq8
-# +tT4HKbROg79MB8GA1UdIwQYMBaAFAh2zcsH/yT2xc3tu5C84oQ3RnX3MA4GA1Ud
-# DwEB/wQEAwIBBjAvBgNVHR8EKDAmMCSgIqAghh5odHRwOi8vY3JsLmNlcnR1bS5w
-# bC9jdG5jYS5jcmwwawYIKwYBBQUHAQEEXzBdMCgGCCsGAQUFBzABhhxodHRwOi8v
-# c3ViY2Eub2NzcC1jZXJ0dW0uY29tMDEGCCsGAQUFBzAChiVodHRwOi8vcmVwb3Np
-# dG9yeS5jZXJ0dW0ucGwvY3RuY2EuY2VyMDkGA1UdIAQyMDAwLgYEVR0gADAmMCQG
-# CCsGAQUFBwIBFhhodHRwOi8vd3d3LmNlcnR1bS5wbC9DUFMwDQYJKoZIhvcNAQEM
-# BQADggEBAFHCoVgWIhCL/IYx1MIy01z4S6Ivaj5N+KsIHu3V6PrnCA3st8YeDrJ1
-# BXqxC/rXdGoABh+kzqrya33YEcARCNQOTWHFOqj6seHjmOriY/1B9ZN9DbxdkjuR
-# mmW60F9MvkyNaAMQFtXx0ASKhTP5N+dbLiZpQjy6zbzUeulNndrnQ/tjUoCFBMQl
-# lVXwfqefAcVbKPjgzoZwpic7Ofs4LphTZSJ1Ldf23SIikZbr3WjtP6MZl9M7JYjs
-# NhI9qX7OAo0FmpKnJ25FspxihjcNpDOO16hO0EoXQ0zF8ads0h5YbBRRfopUofbv
-# n3l6XYGaFpAP4bvxSgD5+d2+7arszgowggaDMIIEa6ADAgECAhEAnpwE9lWotKcC
-# bUmMbHiNqjANBgkqhkiG9w0BAQwFADBWMQswCQYDVQQGEwJQTDEhMB8GA1UEChMY
-# QXNzZWNvIERhdGEgU3lzdGVtcyBTLkEuMSQwIgYDVQQDExtDZXJ0dW0gVGltZXN0
-# YW1waW5nIDIwMjEgQ0EwHhcNMjUwMTA5MDg0MDQzWhcNMzYwMTA3MDg0MDQzWjBQ
-# MQswCQYDVQQGEwJQTDEhMB8GA1UECgwYQXNzZWNvIERhdGEgU3lzdGVtcyBTLkEu
-# MR4wHAYDVQQDDBVDZXJ0dW0gVGltZXN0YW1wIDIwMjUwggIiMA0GCSqGSIb3DQEB
-# AQUAA4ICDwAwggIKAoICAQDHKV9n+Kwr3ZBF5UCLWOQ/NdbblAvQeGMjfCi/bibT
-# 71hPkwKV4UvQt1MuOwoaUCYtsLhw8jrmOmoz2HoHKKzEpiS3A1rA3ssXUZMnSrbi
-# iVpDj+5MtnbXSVEJKbccuHbmwcjl39N4W72zccoC/neKAuwO1DJ+9SO+YkHncRiV
-# 95idWhxRAcDYv47hc9GEFZtTFxQXLbrL4N7N90BqLle3ayznzccEPQ+E6H6p00zE
-# 9HUp++3bZTF4PfyPRnKCLc5ezAzEqqbbU5F/nujx69T1mm02jltlFXnTMF1vlake
-# QXWYpGIjtrR7WP7tIMZnk78nrYSfeAp8le+/W/5+qr7tqQZufW9invsRTcfk7P+m
-# nKjJLuSbwqgxelvCBryz9r51bT0561aR2c+joFygqW7n4FPCnMLOj40X4ot7wP2u
-# 8kLRDVHbhsHq5SGLqr8DbFq14ws2ALS3tYa2GGiA7wX79rS5oDMnSY/xmJO5cupu
-# SvqpylzO7jzcLOwWiqCrq05AXp51SRrj9xRt8KdZWpDdWhWmE8MFiFtmQ0AqODLJ
-# Bn1hQAx3FvD/pte6pE1Bil0BOVC2Snbeq/3NylDwvDdAg/0CZRJsQIaydHswJwyY
-# BlYUDyaQK2yUS57hobnYx/vStMvTB96ii4jGV3UkZh3GvwdDCsZkbJXaU8ATF/z6
-# DwIDAQABo4IBUDCCAUwwdQYIKwYBBQUHAQEEaTBnMDsGCCsGAQUFBzAChi9odHRw
-# Oi8vc3ViY2EucmVwb3NpdG9yeS5jZXJ0dW0ucGwvY3RzY2EyMDIxLmNlcjAoBggr
-# BgEFBQcwAYYcaHR0cDovL3N1YmNhLm9jc3AtY2VydHVtLmNvbTAfBgNVHSMEGDAW
-# gBS+VAIvv0Bsc0POrAklTp5DRBru4DAMBgNVHRMBAf8EAjAAMDkGA1UdHwQyMDAw
-# LqAsoCqGKGh0dHA6Ly9zdWJjYS5jcmwuY2VydHVtLnBsL2N0c2NhMjAyMS5jcmww
-# FgYDVR0lAQH/BAwwCgYIKwYBBQUHAwgwDgYDVR0PAQH/BAQDAgeAMCIGA1UdIAQb
-# MBkwCAYGZ4EMAQQCMA0GCyqEaAGG9ncCBQELMB0GA1UdDgQWBBSBjAagKFP8AD/b
-# fp5KwR8i7LISiTANBgkqhkiG9w0BAQwFAAOCAgEAmQ8ZDBvrBUPnaL87AYc4Jlmf
-# H1ZP5yt65MtzYu8fbmsL3d3cvYs+Enbtfu9f2wMehzSyved3Rc59a04O8NN7plw4
-# PXg71wfSE4MRFM1EuqL63zq9uTjm/9tA73r1aCdWmkprKp0aLoZolUN0qGcvr9+Q
-# G8VIJVMcuSqFeEvRrLEKK2xVkMSdTTbDhseUjI4vN+BrXm5z45EA3aDpSiZQuoNd
-# 4RFnDzddbgfcCQPaY2UyXqzNBjnuz6AyHnFzKtNlCevkMBgh4dIDt/0DGGDOaTEA
-# WZtUEqK5AlHd0PBnd40Lnog4UATU3Bt6GHfeDmWEHFTjHKsmn9Q8wiGj906bVgL8
-# 35tfEH9EgYDklqrOUxWxDf1cOA7ds/r8pIc2vjLQ9tOSkm9WXVbnTeLG3Q57frTg
-# CvTObd/qf3UzE97nTNOU7vOMZEo41AgmhuEbGsyQIDM/V6fJQX1RnzzJNoqfTTkU
-# zUoP2tlNHnNsjFo2YV+5yZcoaawmNWmR7TywUXG2/vFgJaG0bfEoodeeXp7A4I4H
-# aDDpfRa7ypgJEPeTwHuBRJpj9N+1xtri+6BzHPwsAAvUJm58PGoVsteHAXwvpg4N
-# VgvUk3BKbl7xFulWU1KHqH/sk7T0CFBQ5ohuKPmFf1oqAP4AO9a3Yg2wBMwEg1zP
-# Oh6xbUXskzs9iSa9yGwwgga5MIIEoaADAgECAhEAmaOACiZVO2Wr3G6EprPqOTAN
-# BgkqhkiG9w0BAQwFADCBgDELMAkGA1UEBhMCUEwxIjAgBgNVBAoTGVVuaXpldG8g
-# VGVjaG5vbG9naWVzIFMuQS4xJzAlBgNVBAsTHkNlcnR1bSBDZXJ0aWZpY2F0aW9u
-# IEF1dGhvcml0eTEkMCIGA1UEAxMbQ2VydHVtIFRydXN0ZWQgTmV0d29yayBDQSAy
-# MB4XDTIxMDUxOTA1MzIxOFoXDTM2MDUxODA1MzIxOFowVjELMAkGA1UEBhMCUEwx
-# ITAfBgNVBAoTGEFzc2VjbyBEYXRhIFN5c3RlbXMgUy5BLjEkMCIGA1UEAxMbQ2Vy
-# dHVtIENvZGUgU2lnbmluZyAyMDIxIENBMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
-# MIICCgKCAgEAnSPPBDAjO8FGLOczcz5jXXp1ur5cTbq96y34vuTmflN4mSAfgLKT
-# vggv24/rWiVGzGxT9YEASVMw1Aj8ewTS4IndU8s7VS5+djSoMcbvIKck6+hI1shs
-# ylP4JyLvmxwLHtSworV9wmjhNd627h27a8RdrT1PH9ud0IF+njvMk2xqbNTIPsnW
-# tw3E7DmDoUmDQiYi/ucJ42fcHqBkbbxYDB7SYOouu9Tj1yHIohzuC8KNqfcYf7Z4
-# /iZgkBJ+UFNDcc6zokZ2uJIxWgPWXMEmhu1gMXgv8aGUsRdaCtVD2bSlbfsq7Biq
-# ljjaCun+RJgTgFRCtsuAEw0pG9+FA+yQN9n/kZtMLK+Wo837Q4QOZgYqVWQ4x6cM
-# 7/G0yswg1ElLlJj6NYKLw9EcBXE7TF3HybZtYvj9lDV2nT8mFSkcSkAExzd4prHw
-# YjUXTeZIlVXqj+eaYqoMTpMrfh5MCAOIG5knN4Q/JHuurfTI5XDYO962WZayx7AC
-# Ff5ydJpoEowSP07YaBiQ8nXpDkNrUA9g7qf/rCkKbWpQ5boufUnq1UiYPIAHlezf
-# 4muJqxqIns/kqld6JVX8cixbd6PzkDpwZo4SlADaCi2JSplKShBSND36E/ENVv8u
-# rPS0yOnpG4tIoBGxVCARPCg1BnyMJ4rBJAcOSnAWd18Jx5n858JSqPECAwEAAaOC
-# AVUwggFRMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFN10XUwA23ufoHTKsW73
-# PMAywHDNMB8GA1UdIwQYMBaAFLahVDkCw6A/joq8+tT4HKbROg79MA4GA1UdDwEB
-# /wQEAwIBBjATBgNVHSUEDDAKBggrBgEFBQcDAzAwBgNVHR8EKTAnMCWgI6Ahhh9o
-# dHRwOi8vY3JsLmNlcnR1bS5wbC9jdG5jYTIuY3JsMGwGCCsGAQUFBwEBBGAwXjAo
-# BggrBgEFBQcwAYYcaHR0cDovL3N1YmNhLm9jc3AtY2VydHVtLmNvbTAyBggrBgEF
-# BQcwAoYmaHR0cDovL3JlcG9zaXRvcnkuY2VydHVtLnBsL2N0bmNhMi5jZXIwOQYD
-# VR0gBDIwMDAuBgRVHSAAMCYwJAYIKwYBBQUHAgEWGGh0dHA6Ly93d3cuY2VydHVt
-# LnBsL0NQUzANBgkqhkiG9w0BAQwFAAOCAgEAdYhYD+WPUCiaU58Q7EP89DttyZqG
-# Yn2XRDhJkL6P+/T0IPZyxfxiXumYlARMgwRzLRUStJl490L94C9LGF3vjzzH8Jq3
-# iR74BRlkO18J3zIdmCKQa5LyZ48IfICJTZVJeChDUyuQy6rGDxLUUAsO0eqeLNhL
-# Vsgw6/zOfImNlARKn1FP7o0fTbj8ipNGxHBIutiRsWrhWM2f8pXdd3x2mbJCKKtl
-# 2s42g9KUJHEIiLni9ByoqIUul4GblLQigO0ugh7bWRLDm0CdY9rNLqyA3ahe8Wlx
-# VWkxyrQLjH8ItI17RdySaYayX3PhRSC4Am1/7mATwZWwSD+B7eMcZNhpn8zJ+6MT
-# yE6YoEBSRVrs0zFFIHUR08Wk0ikSf+lIe5Iv6RY3/bFAEloMU+vUBfSouCReZwSL
-# o8WdrDlPXtR0gicDnytO7eZ5827NS2x7gCBibESYkOh1/w1tVxTpV2Na3PR7nxYV
-# lPu1JPoRZCbH86gc96UTvuWiOruWmyOEMLOGGniR+x+zPF/2DaGgK2W1eEJfo2qy
-# rBNPvF7wuAyQfiFXLwvWHamoYtPZo0LHuH8X3n9C+xN4YaNjt2ywzOr+tKyEVAot
-# nyU9vyEVOaIYMk3IeBrmFnn0gbKeTTyYeEEUz/Qwt4HOUBCrW602NCmvO1nm+/80
-# nLy5r0AZvCQxaQ4wgga5MIIEoaADAgECAhEA5/9pxzs1zkuRJth0fGilhzANBgkq
-# hkiG9w0BAQwFADCBgDELMAkGA1UEBhMCUEwxIjAgBgNVBAoTGVVuaXpldG8gVGVj
-# aG5vbG9naWVzIFMuQS4xJzAlBgNVBAsTHkNlcnR1bSBDZXJ0aWZpY2F0aW9uIEF1
-# dGhvcml0eTEkMCIGA1UEAxMbQ2VydHVtIFRydXN0ZWQgTmV0d29yayBDQSAyMB4X
-# DTIxMDUxOTA1MzIwN1oXDTM2MDUxODA1MzIwN1owVjELMAkGA1UEBhMCUEwxITAf
-# BgNVBAoTGEFzc2VjbyBEYXRhIFN5c3RlbXMgUy5BLjEkMCIGA1UEAxMbQ2VydHVt
-# IFRpbWVzdGFtcGluZyAyMDIxIENBMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIIC
-# CgKCAgEA6RIfBDXtuV16xaaVQb6KZX9Od9FtJXXTZo7b+GEof3+3g0ChWiKnO7R4
-# +6MfrvLyLCWZa6GpFHjEt4t0/GiUQvnkLOBRdBqr5DOvlmTvJJs2X8ZmWgWJjC7P
-# BZLYBWAs8sJl3kNXxBMX5XntjqWx1ZOuuXl0R4x+zGGSMzZ45dpvB8vLpQfZkfMC
-# /1tL9KYyjU+htLH68dZJPtzhqLBVG+8ljZ1ZFilOKksS79epCeqFSeAUm2eMTGpO
-# iS3gfLM6yvb8Bg6bxg5yglDGC9zbr4sB9ceIGRtCQF1N8dqTgM/dSViiUgJkcv5d
-# LNJeWxGCqJYPgzKlYZTgDXfGIeZpEFmjBLwURP5ABsyKoFocMzdjrCiFbTvJn+bD
-# 1kq78qZUgAQGGtd6zGJ88H4NPJ5Y2R4IargiWAmv8RyvWnHr/VA+2PrrK9eXe5q7
-# M88YRdSTq9TKbqdnITUgZcjjm4ZUjteq8K331a4P0s2in0p3UubMEYa/G5w6jSWP
-# UzchGLwWKYBfeSu6dIOC4LkeAPvmdZxSB1lWOb9HzVWZoM8Q/blaP4LWt6JxjkI9
-# yQsYGMdCqwl7uMnPUIlcExS1mzXRxUowQref/EPaS7kYVaHHQrp4XB7nTEtQhkP0
-# Z9Puz/n8zIFnUSnxDof4Yy650PAXSYmK2TcbyDoTNmmt8xAxzcMCAwEAAaOCAVUw
-# ggFRMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFL5UAi+/QGxzQ86sCSVOnkNE
-# Gu7gMB8GA1UdIwQYMBaAFLahVDkCw6A/joq8+tT4HKbROg79MA4GA1UdDwEB/wQE
-# AwIBBjATBgNVHSUEDDAKBggrBgEFBQcDCDAwBgNVHR8EKTAnMCWgI6Ahhh9odHRw
-# Oi8vY3JsLmNlcnR1bS5wbC9jdG5jYTIuY3JsMGwGCCsGAQUFBwEBBGAwXjAoBggr
-# BgEFBQcwAYYcaHR0cDovL3N1YmNhLm9jc3AtY2VydHVtLmNvbTAyBggrBgEFBQcw
-# AoYmaHR0cDovL3JlcG9zaXRvcnkuY2VydHVtLnBsL2N0bmNhMi5jZXIwOQYDVR0g
-# BDIwMDAuBgRVHSAAMCYwJAYIKwYBBQUHAgEWGGh0dHA6Ly93d3cuY2VydHVtLnBs
-# L0NQUzANBgkqhkiG9w0BAQwFAAOCAgEAuJNZd8lMFf2UBwigp3qgLPBBk58BFCS3
-# Q6aJDf3TISoytK0eal/JyCB88aUEd0wMNiEcNVMbK9j5Yht2whaknUE1G32k6uld
-# 7wcxHmw67vUBY6pSp8QhdodY4SzRRaZWzyYlviUpyU4dXyhKhHSncYJfa1U75cXx
-# Ce3sTp9uTBm3f8Bj8LkpjMUSVTtMJ6oEu5JqCYzRfc6nnoRUgwz/GVZFoOBGdrSE
-# tDN7mZgcka/tS5MI47fALVvN5lZ2U8k7Dm/hTX8CWOw0uBZloZEW4HB0Xra3qE4q
-# zzq/6M8gyoU/DE0k3+i7bYOrOk/7tPJg1sOhytOGUQ30PbG++0FfJioDuOFhj99b
-# 151SqFlSaRQYz74y/P2XJP+cF19oqozmi0rRTkfyEJIvhIZ+M5XIFZttmVQgTxfp
-# fJwMFFEoQrSrklOxpmSygppsUDJEoliC05vBLVQ+gMZyYaKvBJ4YxBMlKH5ZHkRd
-# loRYlUDplk8GUa+OCMVhpDSQurU6K1ua5dmZftnvSSz2H96UrQDzA6DyiI1V3ejV
-# tvn2azVAXg6NnjmuRZ+wa7Pxy0H3+V4K4rOTHlG3VYA6xfLsTunCz72T6Ot4+tkr
-# DYOeaU1pPX1CBfYj6EW2+ELq46GP8KCNUQDirWLU4nOmgCat7vN0SD6RlwUiSsMe
-# CiQDmZwgwrUwggbpMIIE0aADAgECAhBiOsZKIV2oSfsf25d4iu6HMA0GCSqGSIb3
-# DQEBCwUAMFYxCzAJBgNVBAYTAlBMMSEwHwYDVQQKExhBc3NlY28gRGF0YSBTeXN0
-# ZW1zIFMuQS4xJDAiBgNVBAMTG0NlcnR1bSBDb2RlIFNpZ25pbmcgMjAyMSBDQTAe
-# Fw0yNTA3MzExMTM4MDhaFw0yNjA3MzExMTM4MDdaMIGOMQswCQYDVQQGEwJERTEb
-# MBkGA1UECAwSQmFkZW4tV8O8cnR0ZW1iZXJnMRQwEgYDVQQHDAtCYWllcnNicm9u
-# bjEeMBwGA1UECgwVT3BlbiBTb3VyY2UgRGV2ZWxvcGVyMSwwKgYDVQQDDCNPcGVu
-# IFNvdXJjZSBEZXZlbG9wZXIsIEhlcHAgQW5kcmVhczCCAiIwDQYJKoZIhvcNAQEB
-# BQADggIPADCCAgoCggIBAOt2txKXx2UtfBNIw2kVihIAcgPkK3lp7np/qE0evLq2
-# J/L5kx8m6dUY4WrrcXPSn1+W2/PVs/XBFV4fDfwczZnQ/hYzc8Ot5YxPKLx6hZxK
-# C5v8LjNIZ3SRJvMbOpjzWoQH7MLIIj64n8mou+V0CMk8UElmU2d0nxBQyau1njQP
-# CLvlfInu4tDndyp3P87V5bIdWw6MkZFhWDkILTYInYicYEkut5dN9hT02t/3rXu2
-# 30DEZ6S1OQtm9loo8wzvwjRoVX3IxnfpCHGW8Z9ie9I9naMAOG2YpvpoUbLG3fL/
-# B6JVNNR1mm/AYaqVMtAXJpRlqvbIZyepcG0YGB+kOQLdoQCWlIp3a14Z4kg6bU9C
-# U1KNR4ueA+SqLNu0QGtgBAdTfqoWvyiaeyEogstBHglrZ39y/RW8OOa50pSleSRx
-# SXiGW+yH+Ps5yrOopTQpKHy0kRincuJpYXgxGdGxxKHwuVJHKXL0nWScEku0C38p
-# M9sYanIKncuF0Ed7RvyNqmPP5pt+p/0ZG+zLNu/Rce0LE5FjAIRtW2hFxmYMyohk
-# afzyjCCCG0p2KFFT23CoUfXx59nCU+lyWx/iyDMV4sqrcvmZdPZF7lkaIb5B4PYP
-# vFFE7enApz4Niycj1gPUFlx4qTcXHIbFLJDp0ry6MYelX+SiMHV7yDH/rnWXm5d3
-# AgMBAAGjggF4MIIBdDAMBgNVHRMBAf8EAjAAMD0GA1UdHwQ2MDQwMqAwoC6GLGh0
-# dHA6Ly9jY3NjYTIwMjEuY3JsLmNlcnR1bS5wbC9jY3NjYTIwMjEuY3JsMHMGCCsG
-# AQUFBwEBBGcwZTAsBggrBgEFBQcwAYYgaHR0cDovL2Njc2NhMjAyMS5vY3NwLWNl
-# cnR1bS5jb20wNQYIKwYBBQUHMAKGKWh0dHA6Ly9yZXBvc2l0b3J5LmNlcnR1bS5w
-# bC9jY3NjYTIwMjEuY2VyMB8GA1UdIwQYMBaAFN10XUwA23ufoHTKsW73PMAywHDN
-# MB0GA1UdDgQWBBQYl6R41hwxInb9JVvqbCTp9ILCcTBLBgNVHSAERDBCMAgGBmeB
-# DAEEATA2BgsqhGgBhvZ3AgUBBDAnMCUGCCsGAQUFBwIBFhlodHRwczovL3d3dy5j
-# ZXJ0dW0ucGwvQ1BTMBMGA1UdJQQMMAoGCCsGAQUFBwMDMA4GA1UdDwEB/wQEAwIH
-# gDANBgkqhkiG9w0BAQsFAAOCAgEAQ4guyo7zysB7MHMBOVKKY72rdY5hrlxPci8u
-# 1RgBZ9ZDGFzhnUM7iIivieAeAYLVxP922V3ag9sDVNR+mzCmu1pWCgZyBbNXykue
-# KJwOfE8VdpmC/F7637i8a7Pyq6qPbcfvLSqiXtVrT4NX4NIvODW3kIqf4nGwd0h3
-# 1tuJVHLkdpGmT0q4TW0gAxnNoQ+lO8uNzCrtOBk+4e1/3CZXSDnjR8SUsHrHdhnm
-# qkAnYb40vf69dfDR148tToUj872yYeBUEGUsQUDgJ6HSkMVpLQz/Nb3xy9qkY33M
-# 7CBWKuBVwEcbGig/yj7CABhIrY1XwRddYQhEyozUS4mXNqXydAD6Ylt143qrECD2
-# s3MDQBgP2sbRHdhVgzr9+n1iztXkPHpIlnnXPkZrt89E5iGL+1PtjETrhTkr7nxj
-# yMFjrbmJ8W/XglwopUTCGfopDFPlzaoFf5rH/v3uzS24yb6+dwQrvCwFA9Y9ZHy2
-# ITJx7/Ll6AxWt7Lz9JCJ5xRyYeRUHs6ycB8EuMPAKyGpzdGtjWv2rkTXbkIYUjkl
-# FTpquXJBc/kO5L+Quu0a0uKn4ea16SkABy052XHQqd87cSJg3rGxsagi0IAfxGM6
-# 08oupufSS/q9mpQPgkDuMJ8/zdre0st8OduAoG131W+XJ7mm0gIuh2zNmSIet5RD
-# oa8THmwxggckMIIHIAIBATBqMFYxCzAJBgNVBAYTAlBMMSEwHwYDVQQKExhBc3Nl
-# Y28gRGF0YSBTeXN0ZW1zIFMuQS4xJDAiBgNVBAMTG0NlcnR1bSBDb2RlIFNpZ25p
-# bmcgMjAyMSBDQQIQYjrGSiFdqEn7H9uXeIruhzANBglghkgBZQMEAgEFAKCBhDAY
-# BgorBgEEAYI3AgEMMQowCKACgAChAoAAMBkGCSqGSIb3DQEJAzEMBgorBgEEAYI3
-# AgEEMBwGCisGAQQBgjcCAQsxDjAMBgorBgEEAYI3AgEVMC8GCSqGSIb3DQEJBDEi
-# BCB7G+fF6F2CusDGSs23aPLNcSAbifyglOBa8XexAWYNDzANBgkqhkiG9w0BAQEF
-# AASCAgABOYN/JEgP+jBKlPidk91JGSferV4L+UlHay9eEpq/qmjtapTf+MSeP4wd
-# jzX7deFFp7PXDjhqxaxAei7OlhxlIgTiisR/Y4Hwy02YQ9GKTZIAKlo9XR1xToH6
-# eeELAHZEtp7+0C9EMCiKGPqBq2l7JZ+PL0HIdsKlDBHNVtvkYnx0/NwnBvD73g6B
-# qxjUoTgKfEsZc6mBii+tjtpmOQYU3xO5XHpAbNkyKQCk2bd/9U0PwoxKy9N1mxIH
-# 6v7RLboyfyfCm6Z9yKklPDxgNimJGU79D2TDU24+mNykWDkAhWxzdUX8Hew5yF11
-# w4j/EnyE8zGBvrWDWuqAN+t3Lya9AE0+ZyYhmKRAkEFeCqexs1MUGxNL3j0WHKch
-# VuwyBuH9uMZooxxfYUjjrvcrgvVCmwXxzNj2cWib3+kVaCJeoPIFGexUO0gGL9hW
-# ZOksMkgtyX1ip58FX5rT7Mt+xkf8L1ROhxOLXfDSFTHkL/3ElPKaqQ2sz57U7B1Z
-# WIVqn/W0SUMjO4XtoAeHAw2RSzuKyr4n1+AjXmuLW52rPkDi/6TYw3evH1Dy6zgA
-# INSPtu2lqfwkY27mnq8Ut+24XhiH+ux3Ubj8LAdl11aqp1oAu1sbk5J/MnrvZi+K
-# GKrg+j209CkGNLrcskGLlkcrbAVIS8impS6ymBlng5SvYn42m6GCBAQwggQABgkq
-# hkiG9w0BCQYxggPxMIID7QIBATBrMFYxCzAJBgNVBAYTAlBMMSEwHwYDVQQKExhB
-# c3NlY28gRGF0YSBTeXN0ZW1zIFMuQS4xJDAiBgNVBAMTG0NlcnR1bSBUaW1lc3Rh
-# bXBpbmcgMjAyMSBDQQIRAJ6cBPZVqLSnAm1JjGx4jaowDQYJYIZIAWUDBAICBQCg
-# ggFXMBoGCSqGSIb3DQEJAzENBgsqhkiG9w0BCRABBDAcBgkqhkiG9w0BCQUxDxcN
-# MjUxMDI1MTc1NzU0WjA3BgsqhkiG9w0BCRACLzEoMCYwJDAiBCDPodw1ne0rw8uJ
-# D6Iw5dr3e1QPGm4rI93PF1ThjPqg1TA/BgkqhkiG9w0BCQQxMgQw/efbJNVEI4cB
-# HcrzHq2jeNamyizVp9zv3C94K6qAo2bGksadiCD7ex9997+hEFZOMIGgBgsqhkiG
-# 9w0BCRACDDGBkDCBjTCBijCBhwQUwyW4mxf8xQJgYc4rcXtFB92camowbzBapFgw
-# VjELMAkGA1UEBhMCUEwxITAfBgNVBAoTGEFzc2VjbyBEYXRhIFN5c3RlbXMgUy5B
-# LjEkMCIGA1UEAxMbQ2VydHVtIFRpbWVzdGFtcGluZyAyMDIxIENBAhEAnpwE9lWo
-# tKcCbUmMbHiNqjANBgkqhkiG9w0BAQEFAASCAgCtnuw7J7tRMNeBAjrE9W6BRhhZ
-# aOhiD6SIvlYt0hRk4RqTypeId9nxcfc8He8YiwQo9WDzMhYXu8rABr7p4AYxVDsY
-# 59dma50JhTkVfEr4Ij/okjyIm/1cGpufyD4UrZaPTQayK0frONa84rhSiXnmI+Ha
-# qdYxp0mWNyEeazXRnB4LRVpAzHMVXD3r9RWcqHWrIrRKU/XamFv0RD4WcJEbFXl2
-# y2KGRSGDk+MWFlCwVUiN+7F/nAuT8iQ2Gx/po/48D+fWneg+DwRwnVocoI+VaK/2
-# 3VjGDpF9zdEBgoe4nOrwnN7WHXUXMfnach+zd8uWvaMiA3rvHD+LT64c/EETZdQH
-# 5scw0oncheraUOmdkQB1K8ssm3JxvinEegSLz37R9uPY+KkevAjRXLCtd08p6JFG
-# TEhOy8wq4xXkdDUpT52k2iRFyEH4rigL9ouWfEw87Jl/w/pUJbzJyAOGCZnlAKUb
-# 10/hg1jcvBzlbo6yXcLOsARTLmEbk/e4yPwMVctW0vhy5NU/Z2cY2GxoyTBCEEVz
-# yIjlXRY72ZuPwr9MQM5scmAHxo4DKeLOB1TJuLpjhJ8mVp8J2hRcTlVOcESkIi3d
-# VsdvTHd5TbB6MLBc4gaABtPhCQ4tWHclIhmIa36GMa318dNcFQj/wh0AcoN26P9D
-# Jx5AhwGD44zvOV7LWg==
-# SIG # End signature block

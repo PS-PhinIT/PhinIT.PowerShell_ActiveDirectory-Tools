@@ -1,6 +1,6 @@
 # easyBITKEYS
 
-**Version (Script):** 0.5.2  
+**Version (Script):** 0.5.3  
 **Datei:** `easyBITKEYS_V0.5.1.ps1`  
 **Author:** Andreas Hepp  
 **Last Update:** 09.06.2026
@@ -25,9 +25,8 @@
 Das Tool läuft **eigenständig** ohne externe Konfigurationsdatei:
 
 - Keine INI-Datei erforderlich
-- Fehlende GUI-Assets (`assets/info.png`, `assets/close.png`) blockieren den Start nicht (Text-Fallback)
-- Fehlendes Header-Logo blockiert den Start nicht
-- Standardmäßig wird **keine externe URL** aus der GUI geöffnet
+- GUI nutzt **keine externen Assets** (keine Logo-/Icon-Dateien)
+- GUI öffnet **keine externen URLs**
 
 Wenn das AD-Modul oder Berechtigungen fehlen, schaltet das Tool automatisch in den **Client Mode** (Beispieldaten) und bleibt bedienbar.
 

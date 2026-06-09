@@ -2,6 +2,18 @@
 
 Alle relevanten Änderungen an `easyBITKEYS` werden hier dokumentiert.
 
+## [0.5.3] - 2026-06-09
+
+### Changed
+- Alle GUI-Verweise auf externe Assets entfernt (Logo/Icons/URLs).
+- Header-Logo aus dem XAML entfernt.
+- Info-/Exit-Buttons auf feste Textdarstellung (`i` / `X`) umgestellt.
+- Asset-Ladecode (`assets/*.png`) vollständig aus der GUI-Initialisierung entfernt.
+- Asset-Checks aus `Test-Requirements` entfernt.
+
+### Result
+- GUI läuft vollständig ohne externe Dateien und ohne externe Links.
+
 ## [0.5.2] - 2026-06-09
 
 ### Fixed
