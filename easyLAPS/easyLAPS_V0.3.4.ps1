@@ -239,7 +239,7 @@ function Show-ErrorMessage {
     }
     
     # Fehler loggen
-    Write-Log -Message $detailedMessage -Type "Error"
+    Write-Log -Message $detailedMessage -Level "Error"
     
     # MessageBox anzeigen
     [System.Windows.MessageBox]::Show(
@@ -252,6 +252,21 @@ function Show-ErrorMessage {
 #endregion
 
 #region [2.3 | Hilfsfunktionen]
+function Open-URLInBrowser {
+    param(
+        [Parameter(Mandatory=$true)][string]$Url
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return }
+
+    try {
+        Start-Process -FilePath $Url -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Log -Message "Konnte URL nicht öffnen ($Url): $($_.Exception.Message)" -Level "Warning"
+    }
+}
+
 function Update-GuiText {
     param (
         [Parameter(Mandatory=$true)][System.Windows.Controls.TextBlock]$TextElement,
@@ -280,7 +295,7 @@ function Update-GuiText {
         )
     }
     catch {
-        Write-Log -Message "Fehler bei Update-GuiText: $($_.Exception.Message)" -Type "Error"
+        Write-Log -Message "Fehler bei Update-GuiText: $($_.Exception.Message)" -Level "Error"
     }
 }
 
@@ -296,7 +311,7 @@ function Show-MessageBox {
         return [System.Windows.MessageBox]::Show($Message, $Title, $Button, $Icon)
     }
     catch {
-        Write-Log -Message "Fehler beim Anzeigen der MessageBox: $($_.Exception.Message)" -Type "Error"
+        Write-Log -Message "Fehler beim Anzeigen der MessageBox: $($_.Exception.Message)" -Level "Error"
         return [System.Windows.MessageBoxResult]::None
     }
 }
@@ -320,7 +335,7 @@ function Get-RegistryValue {
         return $DefaultValue
     }
     catch {
-        Write-Log -Message "Fehler beim Lesen des Registry-Werts '$Name': $($_.Exception.Message)" -Type "Error"
+        Write-Log -Message "Fehler beim Lesen des Registry-Werts '$Name': $($_.Exception.Message)" -Level "Error"
         return $DefaultValue
     }
 }
@@ -344,7 +359,7 @@ function Set-RegistryValue {
         return $true
     }
     catch {
-        Write-Log -Message "Fehler beim Setzen des Registry-Werts '$Name': $($_.Exception.Message)" -Type "Error"
+        Write-Log -Message "Fehler beim Setzen des Registry-Werts '$Name': $($_.Exception.Message)" -Level "Error"
         return $false
     }
 }
@@ -501,19 +516,20 @@ function Get-LapsPasswordEx {
         }
         
         # Validiere die Passwort-Daten
-        if ($null -eq $pwdInfo.Password -or $null -eq $pwdInfo.ComputerName -or $null -eq $pwdInfo.ExpirationTimestamp) {
-            $result.ErrorMessage = "Unvollständige Passwort-Daten."
-            Write-Log "LAPS Passwort-Daten für $ComputerName sind unvollständig." -Level "Warning"
+        if ($null -eq $pwdInfo.Password) {
+            $result.ErrorMessage = "Passwort-Daten enthalten kein Passwort."
+            Write-Log "LAPS Passwort-Daten für $ComputerName sind unvollständig (kein Passwort)." -Level "Warning"
             return $result
         }
         
         # Erfolgreicher Abruf
         $result.Success = $true
         $result.Password = ConvertTo-SecureString $pwdInfo.Password -AsPlainText -Force
-        $result.UserName = if ($null -ne $pwdInfo.Account) { $pwdInfo.Account } else { "Administrator" }
-        $result.PasswordExpiresTimestamp = $pwdInfo.ExpirationTimestamp
-        $result.PasswordLastSetTimestamp = $pwdInfo.PasswordUpdateTime
-        $result.LapsVersion = if ($null -ne $pwdInfo.PasswordUpdateTime) { "Windows LAPS" } else { "Legacy LAPS" }
+        $result.ComputerName = if ($null -ne $pwdInfo.ComputerName) { $pwdInfo.ComputerName } else { $ComputerName }
+        $result.UserName = if ($null -ne $pwdInfo.Account -and -not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $pwdInfo.Account } else { "Administrator" }
+        $result.PasswordExpiresTimestamp = if ($pwdInfo.PSObject.Properties['ExpirationTimestamp']) { $pwdInfo.ExpirationTimestamp } else { $null }
+        $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime']) { $pwdInfo.PasswordUpdateTime } else { $null }
+        $result.LapsVersion = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime']) { "Windows LAPS" } else { "Legacy LAPS" }
         Write-Log "LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
     }
     catch {
@@ -585,6 +601,24 @@ function Reset-LapsPasswordEx {
     }
     
     try {
+        $hasWindowsLapsCmd = [bool](Get-Command -Name Get-LapsADPassword -ErrorAction SilentlyContinue)
+        $hasLegacyResetCmd = [bool](Get-Command -Name Reset-AdmPwdPassword -ErrorAction SilentlyContinue)
+
+        if (-not $hasWindowsLapsCmd) {
+            if ($hasLegacyResetCmd -and [string]::IsNullOrWhiteSpace($Domain)) {
+                Reset-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
+                $result.Success = $true
+                $result.LapsVersion = "Legacy LAPS (AdmPwd)"
+                return $result
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($Domain)) {
+                throw "Windows LAPS Cmdlets sind nicht verfügbar. Legacy LAPS unterstützt keinen Domain-Parameter beim Reset."
+            }
+
+            throw "Weder Windows LAPS noch Legacy Reset-AdmPwdPassword sind verfügbar."
+        }
+
         # Prüfe welche LAPS Version aktiv ist
         $pwdInfo = if ([string]::IsNullOrWhiteSpace($Domain)) {
             Get-LapsADPassword -Identity $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
@@ -628,7 +662,7 @@ function Convert-SecureStringToPlainText {
     
     try {
         $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-        $plainText = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+        $plainText = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         return $plainText
     }
@@ -686,7 +720,7 @@ public class ProcessDPI {
     $XAML = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="$appName" Height="940" Width="1200" MinHeight="600" MinWidth="800"
+    Title="$appName" Height="940" Width="1200" MinHeight="600" MinWidth="800"
         WindowStartupLocation="CenterScreen" Background="#FFFFFF" FontFamily="$fontFamily" FontSize="12">
     <Window.Resources>
         <!-- Modern Button Style -->
@@ -811,6 +845,10 @@ public class ProcessDPI {
                             <TextBox Name="txtComputerName" Width="200" Height="30" VerticalContentAlignment="Center"/>
                             <Button Name="btnRefreshAdList" Content="Load AD List" Margin="10,0,0,0" Padding="10,5" Height="30" DockPanel.Dock="Right" Style="{StaticResource ModernButton}"/>
                         </DockPanel>
+                        <DockPanel Margin="0,0,0,5">
+                            <TextBlock Text="Filter (Name):" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="#1C1C1C"/>
+                            <TextBox Name="txtFilter" Height="30" VerticalContentAlignment="Center" ToolTip="Filtert die AD-Liste (Ctrl+F)"/>
+                        </DockPanel>
                     </StackPanel>
 
                     <ListBox Name="lstAdComputers" Margin="0,0,0,10" DockPanel.Dock="Top" Height="427" SelectionMode="Single" BorderBrush="#BFBFBF" BorderThickness="1"/>
@@ -932,7 +970,7 @@ public class ProcessDPI {
 
     # Tastenkombinationen definieren
     $window.Add_KeyDown({
-        param($sender, $e)
+        param($source, $e)
         
         # Strg+P für Status & Richtlinien prüfen
         if ($e.Key -eq 'P' -and $e.KeyboardDevice.Modifiers -eq 'Control') {
@@ -940,7 +978,7 @@ public class ProcessDPI {
             $e.Handled = $true
         }        
         # Strg+F für Fokus auf Filter
-        if ($e.Key -eq 'F' -and $e.KeyboardDevice.Modifiers -eq 'Control') {
+        if ($e.Key -eq 'F' -and $e.KeyboardDevice.Modifiers -eq 'Control' -and $controls.txtFilter) {
             $controls.txtFilter.Focus()
             $controls.txtFilter.SelectAll()
             $e.Handled = $true
@@ -980,7 +1018,7 @@ public class ProcessDPI {
     # Logo Klick (falls URL in INI definiert)
     if ($controls.imgLogo -and $clickURL) {
         $controls.imgLogo.Add_MouseUp({
-            param($sender, $e)
+            param($source, $e)
             if ($e.ChangedButton -eq 'Left') { Open-URLInBrowser $clickURL }
         })
     }
@@ -1038,6 +1076,55 @@ $global:UpdateStatus = {
         
         return $script:allComputers | Where-Object { $_ -like "*$filterText*" }
     }
+
+    $LoadLapsPasswordForComputer = {
+        param(
+            [string]$ComputerName
+        )
+
+        if ([string]::IsNullOrWhiteSpace($ComputerName)) {
+            & $global:UpdateStatus -IsLapsCheck "Bitte einen Computernamen eingeben oder auswaehlen." "Warning"
+            return
+        }
+
+        $controls.txtComputerName.Text = $ComputerName
+        $controls.txtLapsUser.Text = "Lade..."
+        $controls.txtLapsPasswordDisplay.Text = "Lade..."
+        $controls.txtPasswordExpiry.Text = "Lade..."
+        $controls.txtPasswordLastSet.Text = "Lade..."
+        $controls.txtLapsVersion.Text = "Lade..."
+
+        try {
+            & $global:UpdateStatus -IsLapsCheck "Lese LAPS Passwort fuer $ComputerName..."
+            $passwordInfo = Get-LapsPasswordEx -ComputerName $ComputerName
+
+            if ($passwordInfo.Success) {
+                $plainPassword = Convert-SecureStringToPlainText -SecureString $passwordInfo.Password
+                $controls.txtLapsUser.Text = $passwordInfo.UserName
+                $controls.txtLapsPasswordDisplay.Text = $plainPassword
+                $controls.txtPasswordExpiry.Text = if ($passwordInfo.PasswordExpiresTimestamp) { $passwordInfo.PasswordExpiresTimestamp.ToString("g") } else { "N/A" }
+                $controls.txtPasswordLastSet.Text = if ($passwordInfo.PasswordLastSetTimestamp) { $passwordInfo.PasswordLastSetTimestamp.ToString("g") } else { "N/A" }
+                $controls.txtLapsVersion.Text = $passwordInfo.LapsVersion
+                & $global:UpdateStatus -IsLapsCheck "LAPS Passwort fuer $ComputerName erfolgreich gelesen." "OK"
+            }
+            else {
+                $controls.txtLapsUser.Text = "N/A"
+                $controls.txtLapsPasswordDisplay.Text = "Passwort nicht verfuegbar."
+                $controls.txtPasswordExpiry.Text = "N/A"
+                $controls.txtPasswordLastSet.Text = "N/A"
+                $controls.txtLapsVersion.Text = "N/A"
+                & $global:UpdateStatus -IsLapsCheck "LAPS-Passwort fuer $ComputerName nicht verfuegbar: $($passwordInfo.ErrorMessage)" "Warning"
+            }
+        }
+        catch {
+            $controls.txtLapsUser.Text = "N/A"
+            $controls.txtLapsPasswordDisplay.Text = "LAPS Passwort konnte nicht gelesen werden."
+            $controls.txtPasswordExpiry.Text = "N/A"
+            $controls.txtPasswordLastSet.Text = "N/A"
+            $controls.txtLapsVersion.Text = "N/A"
+            & $global:UpdateStatus -IsLapsCheck "Fehler beim Laden der LAPS-Passwort Informationen: $($_.Exception.Message)" "Error"
+        }
+    }
     
     # AD Computerliste laden
     $controls.btnRefreshAdList.Add_Click({
@@ -1055,9 +1142,8 @@ $global:UpdateStatus = {
             & $global:UpdateStatus -IsLapsCheck "Fehler beim Laden der AD Computerliste: $($_.Exception.Message)" "Error"
         }
         
-        $filterText = $controls.txtFilter.Text
-        # Fix syntax error by explicitly passing the parameter
-        $filteredComputers = Invoke-Command -ScriptBlock $FilterComputers -ArgumentList $filterText
+        $filterText = if ($controls.txtFilter) { $controls.txtFilter.Text } else { "" }
+        $filteredComputers = & $FilterComputers $filterText
         $controls.lstAdComputers.ItemsSource = $filteredComputers
         
         if ([string]::IsNullOrWhiteSpace($filterText)) {
@@ -1067,52 +1153,34 @@ $global:UpdateStatus = {
         }
     })
 
+    if ($controls.txtFilter) {
+        $controls.txtFilter.Add_TextChanged({
+            $filterText = $controls.txtFilter.Text
+            $controls.lstAdComputers.ItemsSource = & $FilterComputers $filterText
+        })
+    }
+
     # Register event handler for list selection
     $controls.lstAdComputers.Add_SelectionChanged({
-        param($sender, $e)
+        param($source, $e)
         
         $selectedComputer = $controls.lstAdComputers.SelectedItem
         if (-not $selectedComputer) { return }
-        
-        $controls.txtComputerName.Text = $selectedComputer
-        
-        # Clear previous values
-        $controls.txtLapsUser.Text = "Lade..."
-        $controls.txtLapsPasswordDisplay.Text = "Lade..."
-        $controls.txtPasswordExpiry.Text = "Lade..."
-        $controls.txtPasswordLastSet.Text = "Lade..."
-        $controls.txtLapsVersion.Text = "Lade..."
-        
-        try {
-            & $global:UpdateStatus -IsLapsCheck "Lese LAPS Passwort fuer $selectedComputer..."
-            
-            # Use the improved function for LAPS password
-            $passwordInfo = Get-LapsPasswordEx -ComputerName $selectedComputer
-            
-            if ($passwordInfo.Success) {
-                $plainPassword = Convert-SecureStringToPlainText -SecureString $passwordInfo.Password
-                $controls.txtLapsUser.Text = $passwordInfo.UserName
-                $controls.txtLapsPasswordDisplay.Text = $plainPassword
-                $controls.txtPasswordExpiry.Text = if ($passwordInfo.PasswordExpiresTimestamp) { $passwordInfo.PasswordExpiresTimestamp.ToString("g") } else { "N/A" }
-                $controls.txtPasswordLastSet.Text = if ($passwordInfo.PasswordLastSetTimestamp) { $passwordInfo.PasswordLastSetTimestamp.ToString("g") } else { "N/A" }
-                $controls.txtLapsVersion.Text = $passwordInfo.LapsVersion
-                & $global:UpdateStatus -IsLapsCheck "LAPS Passwort fuer $selectedComputer erfolgreich gelesen."
-            } else {
-                $controls.txtLapsUser.Text = "N/A"
-                $controls.txtLapsPasswordDisplay.Text = "Passwort nicht verfuegbar."
-                $controls.txtPasswordExpiry.Text = "N/A"
-                $controls.txtPasswordLastSet.Text = "N/A"
-                $controls.txtLapsVersion.Text = "N/A"
-                & $global:UpdateStatus -IsLapsCheck "LAPS-Passwort fuer $selectedComputer nicht verfuegbar: $($passwordInfo.ErrorMessage)" "Warning"
-            }
-        } catch {
-            $controls.txtLapsUser.Text = "N/A"
-            $controls.txtLapsPasswordDisplay.Text = "LAPS Passwort konnte nicht gelesen werden."
-            $controls.txtPasswordExpiry.Text = "N/A"
-            $controls.txtPasswordLastSet.Text = "N/A"
-            $controls.txtLapsVersion.Text = "N/A"
-            & $global:UpdateStatus -IsLapsCheck "Fehler beim Laden der LAPS-Passwort Informationen: $($_.Exception.Message)" "Error"
+
+        & $LoadLapsPasswordForComputer $selectedComputer
+    })
+
+    # LAPS Passwort anzeigen
+    $controls.btnGetLapsPassword.Add_Click({
+        $computer = $controls.txtComputerName.Text
+
+        if ([string]::IsNullOrWhiteSpace($computer)) {
+            & $global:UpdateStatus -IsLapsCheck "Bitte einen Computernamen eingeben oder auswaehlen." "Warning"
+            [System.Windows.MessageBox]::Show("Bitte einen Computernamen eingeben oder auswaehlen.", "Hinweis", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+            return
         }
+
+        & $LoadLapsPasswordForComputer $computer
     })
 
     # LAPS Passwort zuruecksetzen
@@ -1413,7 +1481,7 @@ $global:UpdateStatus = {
 
     # Update module status label
     if ($ModuleStatus) {
-        $moduleStatusText = "Module Status: $($ModuleStatus.LegacyModuleAvailable), $($ModuleStatus.NewModuleAvailable)"
+        $moduleStatusText = "Module: Windows LAPS=$($ModuleStatus.NewModuleAvailable) | Legacy LAPS=$($ModuleStatus.LegacyModuleAvailable)"
         $controls.lblModuleStatus.Text = $moduleStatusText
     }
 
@@ -1437,9 +1505,14 @@ try {
         exit 501
     }
     
-    # Prüfe, ob Windows LAPS PowerShell Module verfügbar ist
-    if (-Not (Get-Module -Name Laps -ListAvailable)) {
-        $errorMsg = "Windows LAPS PowerShell Module nicht gefunden!`n`nBitte installieren Sie das Windows LAPS Feature."
+    # Prüfe, ob mindestens ein unterstützter LAPS-Pfad verfügbar ist
+    $newModuleAvailable = [bool](Get-Module -Name Laps -ListAvailable)
+    $legacyGetAvailable = [bool](Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue)
+    $legacyResetAvailable = [bool](Get-Command -Name Reset-AdmPwdPassword -ErrorAction SilentlyContinue)
+    $legacyModuleAvailable = $legacyGetAvailable -and $legacyResetAvailable
+
+    if (-Not ($newModuleAvailable -or $legacyModuleAvailable)) {
+        $errorMsg = "Kein unterstütztes LAPS-Modul gefunden!`n`nErforderlich ist entweder:`n- Windows LAPS (Modul 'Laps')`noder`n- Legacy LAPS Cmdlets (Get-AdmPwdPassword/Reset-AdmPwdPassword)."
         Write-Log $errorMsg -Level "ERROR"
         [System.Windows.MessageBox]::Show($errorMsg, "Fehler - LAPS Module fehlt", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
         exit 502
@@ -1452,10 +1525,14 @@ try {
     
     Write-Log "easyLAPS Script gestartet. Logging in: $global:easyLAPSLogFile" -Level "INFO"
     Write-Log "PowerShell Version: $($PSVersionTable.PSVersion)" -Level "INFO"
+    Write-Log "Modulstatus: Windows LAPS=$newModuleAvailable, Legacy LAPS=$legacyModuleAvailable" -Level "INFO"
     Write-Log "easyLAPS GUI wird gestartet..." -Level "INFO"
 
     # Hauptformular anzeigen
-    Show-LAPSForm
+    Show-LAPSForm -ModuleStatus @{
+        NewModuleAvailable = $newModuleAvailable
+        LegacyModuleAvailable = $legacyModuleAvailable
+    }
 
     Write-Log "easyLAPS GUI wurde vom Benutzer oder einem internen Prozess geschlossen." -Level "INFO"
 }
