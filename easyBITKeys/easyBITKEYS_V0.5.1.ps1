@@ -30,8 +30,8 @@
 # Diese Konfigurationswerte sollten am Anfang des Skripts stehen.
 
 # Allgemeine Skriptinformationen
-$ScriptVersion   = "0.4.2"
-$LastUpdate      = "2025-05-23" # Datum der letzten Aktualisierung
+$ScriptVersion   = "0.5.2"
+$LastUpdate      = "2026-06-09" # Datum der letzten Aktualisierung
 $Author          = "ANDREAS HEPP"
 $APPName         = "easyBITKEYS"
 $APPDescription  = "easyBITKEYS displays BitLocker keys from Active Directory in a color-coded manner."
@@ -41,15 +41,16 @@ $ThemeColor      = "#164360" # Hauptfarbe für Header/Footer (Hex-Code)
 $FontFamily      = "Segoe UI" # Standard-Schriftart für die GUI
 $FontSize        = [float]12   # Standard-Schriftgröße für die GUI
 $ConfigHeaderLogoFileName = "APPICON.png"  # Dateiname für das Logo im Header. Muss sich im selben Verzeichnis wie das Skript befinden oder einen relativen/absoluten Pfad haben. Wenn leer, wird kein Logo angezeigt.
-$HeaderLogoURL   = "https://www.phinit.de" # URL, die beim Klick auf das Logo geöffnet wird.
+$HeaderLogoURL   = "" # Optional: Wenn leer, wird keine externe URL geöffnet.
 
 # Debug-Modus (0 = Aus, 1 = An) - Stellen Sie sicher, dass die Write-DebugMessage Funktion existiert
 $global:DebugMode = 0 # Standardmäßig deaktiviert
 $script:Debug = $global:DebugMode # Debug-Modus für das Skript setzen
+$script:ClientMode = $false
 
 # Log-Datei Konfiguration
-$LogFile = Join-Path $script:ScriptRoot "easyBITKEYS.log" # Pfad zur Log-Datei
-$MaxLogSizeMB = 5 # Maximale Größe der Log-Datei in MB
+$LogFileName = "easyBITKEYS.log"
+$LogFile = $null
 
 #endregion Script Configuration
 
@@ -77,6 +78,8 @@ if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") {
 if (-not $script:ScriptRoot) { 
     $script:ScriptRoot = "."
 }
+
+$LogFile = Join-Path -Path $script:ScriptRoot -ChildPath $LogFileName
 
 #region Logging Functions
 # Module for logging
@@ -189,21 +192,20 @@ function Test-Requirements {
         $requiredIcons = @("info.png", "close.png")
         
         if (-not (Test-Path $assetsPath)) {
-            Write-Log -Message "Assets folder not found: $assetsPath" -Level ERROR
-            return $false
+            Write-Log -Message "Assets folder not found: $assetsPath. Fallback icons will be used." -Level WARN
         }
-        
-        foreach ($icon in $requiredIcons) {
-            $iconPath = Join-Path $assetsPath $icon
-            if (-not (Test-Path $iconPath)) {
-                Write-Log -Message "Icon not found: $iconPath" -Level ERROR
-                return $false
+        else {
+            foreach ($icon in $requiredIcons) {
+                $iconPath = Join-Path $assetsPath $icon
+                if (-not (Test-Path $iconPath)) {
+                    Write-Log -Message "Icon not found: $iconPath. Fallback icon will be used." -Level WARN
+                }
             }
         }
         
         # Check if ActiveDirectory module is available
         if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-            Write-Log -Message "ActiveDirectory module not available" -Level ERROR
+            Write-Log -Message "ActiveDirectory module not available. Switching to client mode with sample data." -Level WARN
             $script:ClientMode = $true
             return $true
         }
@@ -214,16 +216,18 @@ function Test-Requirements {
             Get-ADObject -Filter {objectClass -eq "computer"} -ResultSetSize 1 | Out-Null
         }
         catch {
-            Write-Log -Message "Insufficient AD permissions: $_" -Level ERROR
-            return $false
+            Write-Log -Message "Insufficient AD permissions: $_. Switching to client mode with sample data." -Level WARN
+            $script:ClientMode = $true
+            return $true
         }
         
         Write-Log -Message "Self-Diagnostic completed successfully" -Level INFO
         return $true
     }
     catch {
-        Write-Log -Message "Error in Self-Diagnostic: $_" -Level ERROR
-        return $false
+        Write-Log -Message "Error in Self-Diagnostic: $_. Switching to client mode with sample data." -Level WARN
+        $script:ClientMode = $true
+        return $true
     }
 }
 
@@ -901,10 +905,12 @@ try {
             }
             else {
                 Write-Log -Message "Logo file (configured as '$logoFileOrPathFromConfig') not found. Attempted to load from '$resolvedLogoPath'." -Level WARN
+                $headerLogo.Visibility = [System.Windows.Visibility]::Collapsed
             }
         }
         else {
             Write-DebugMessage -Message "Configuration for header logo file/path ('$ConfigHeaderLogoFileName') is empty. Skipping logo load."
+            $headerLogo.Visibility = [System.Windows.Visibility]::Collapsed
         }
     }
     else {
@@ -913,6 +919,8 @@ try {
     }
     # Load icons
     $iconsPath = Join-Path $script:ScriptRoot "assets"
+    $infoIconLoaded = $false
+    $closeIconLoaded = $false
     
     # Load info icon
     if ($null -ne $infoIcon) {
@@ -923,10 +931,11 @@ try {
             $infoImage.UriSource = New-Object System.Uri($infoIconPath)
             $infoImage.EndInit()
             $infoIcon.Source = $infoImage
+            $infoIconLoaded = $true
             Write-DebugMessage -Message "Loaded info icon from $infoIconPath"
         }
         else {
-            Write-Log -Message "Info icon not found: $infoIconPath" -Level WARN
+            Write-Log -Message "Info icon not found: $infoIconPath. Using text fallback." -Level WARN
         }
     }
     
@@ -939,11 +948,22 @@ try {
             $closeImage.UriSource = New-Object System.Uri($closeIconPath)
             $closeImage.EndInit()
             $closeIcon.Source = $closeImage
+            $closeIconLoaded = $true
             Write-DebugMessage -Message "Loaded close icon from $closeIconPath"
         }
         else {
-            Write-Log -Message "Close icon not found: $closeIconPath" -Level WARN
+            Write-Log -Message "Close icon not found: $closeIconPath. Using text fallback." -Level WARN
         }
+    }
+
+    if (-not $infoIconLoaded -and $null -ne $btnInfo) {
+        $btnInfo.Content = "i"
+        $btnInfo.FontWeight = [System.Windows.FontWeights]::Bold
+    }
+
+    if (-not $closeIconLoaded -and $null -ne $btnExit) {
+        $btnExit.Content = "X"
+        $btnExit.FontWeight = [System.Windows.FontWeights]::Bold
     }
 }
 catch {
@@ -954,7 +974,7 @@ catch {
 
 #region Event Handlers for Navigation
 # Event handler for logo click
-if ($null -ne $headerLogo) {
+if ($null -ne $headerLogo -and -not [string]::IsNullOrWhiteSpace($HeaderLogoURL)) {
     $headerLogo.AddHandler([System.Windows.Controls.Image]::MouseLeftButtonDownEvent, [System.Windows.Input.MouseButtonEventHandler]{
         try {
             Write-DebugMessage -Message "Header logo clicked, opening URL: $HeaderLogoURL"
@@ -984,14 +1004,18 @@ if ($null -ne $headerLogo) {
 
 #region ActiveDirectory Integration
 # Import ActiveDirectory module
-try {
-    Import-Module ActiveDirectory -ErrorAction Stop
-    Write-Log -Message "ActiveDirectory module loaded successfully" -Level INFO
+if (-not $script:ClientMode) {
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        Write-Log -Message "ActiveDirectory module loaded successfully" -Level INFO
+    }
+    catch {
+        Write-Log -Message "Error loading ActiveDirectory module: $_. Switching to client mode with sample data." -Level WARN
+        $script:ClientMode = $true
+    }
 }
-catch {
-    Write-Log -Message "Error loading ActiveDirectory module: $_" -Level ERROR
-    [System.Windows.MessageBox]::Show("ActiveDirectory module is not available. Please install RSAT tools.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    $script:ClientMode = $true
+else {
+    Write-Log -Message "Client mode active. Skipping ActiveDirectory module import." -Level INFO
 }
 
 # Function to load BitLocker keys
@@ -1105,6 +1129,11 @@ function Update-BitLockerKeyTable {
         # Dispatcher for thread-safe UI updates
         $window.Dispatcher.Invoke([action]{
             $dataGrid.ItemsSource = $observableCollection
+
+            $global:originalData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
+            foreach ($row in $observableCollection) {
+                $global:originalData.Add($row)
+            }
             
             # Style adjustment for rows based on RowBackground value
             Update-RowStyling -DataGrid $dataGrid
@@ -1129,9 +1158,9 @@ function Update-RowStyling {
         # Sicherstellen, dass der Handler nur einmal registriert wird
         if (-not $script:RowStylingHandlerRegistered) {
             $DataGrid.add_LoadingRow({ 
-                param($sender, $e)
+                param($rowSender, $rowEventArgs)
                 
-                $row = $e.Row
+                $row = $rowEventArgs.Row
                 $item = $row.DataContext
                 
                 # Überprüfe, ob das Item eine RowBackground-Eigenschaft hat
@@ -1204,6 +1233,12 @@ if ($null -ne $btnDelete) {
     $btnDelete.Add_Click({
         try {
             Write-DebugMessage -Message "Delete button clicked"
+
+            if ($script:ClientMode) {
+                [System.Windows.MessageBox]::Show("Delete is disabled in client mode.", "Information", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+                return
+            }
+
             $selectedItem = $dataGrid.SelectedItem
             
             if ($null -eq $selectedItem) {
@@ -1215,6 +1250,11 @@ if ($null -ne $btnDelete) {
             
             if ($confirm -eq [System.Windows.MessageBoxResult]::Yes) {
                 $dn = $selectedItem.DistinguishedName
+                if ([string]::IsNullOrWhiteSpace($dn)) {
+                    [System.Windows.MessageBox]::Show("No DistinguishedName found for selected entry.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+                    return
+                }
+
                 try {
                     # Delete AD object
                     Write-DebugMessage -Message "Removing AD object: $dn"
@@ -1247,15 +1287,6 @@ if ($null -ne $btnExit) {
     })
 } else {
     Write-Log -Message "GUI Element 'btnExit' (Exit Button) not found or initialized. Exit functionality will be unavailable." -Level WARN
-}
-
-if ($null -ne $btnExit) {
-    $btnExit.Add_Click({
-        Write-DebugMessage -Message "Close button clicked, closing application"
-        $window.Close()
-    })
-} else {
-    Write-Log -Message "GUI Element 'btnExit' (Close Button) not found or initialized. Close functionality will be unavailable." -Level WARN
 }
 
 if ($null -ne $btnInfo) {
@@ -1532,18 +1563,18 @@ if ($null -ne $btnApplyFilter) {
 function SortColumn_Click {
     param(
         [Parameter(Mandatory=$true)]
-        [System.Object]$sender,
+        [System.Object]$HeaderSender,
         [Parameter(Mandatory=$true)]
-        [System.Windows.RoutedEventArgs]$e
+        [System.Windows.RoutedEventArgs]$RoutedEventArgs
     )
     
     try {
-        if ($null -eq $sender -or $null -eq $sender.Column) {
+        if ($null -eq $HeaderSender -or $null -eq $HeaderSender.Column) {
             Write-Log -Message "Invalid column header clicked" -Level WARN
             return
         }
         
-        $headerClicked = $sender
+        $headerClicked = $HeaderSender
         $columnName = $headerClicked.Column.Header.ToString()
         
         Write-Log -Message "Sorting by column: $columnName" -Level INFO
@@ -1605,10 +1636,10 @@ try {
     # Add handler using correct namespace
     $dataGrid.AddHandler([System.Windows.Controls.Primitives.DataGridColumnHeader]::MouseLeftButtonUpEvent, 
         [System.Windows.Input.MouseButtonEventHandler]{
-        param($sender, $e)
+        param($columnHeaderSender, $columnHeaderEventArgs)
         
         try {
-            $header = [System.Windows.Media.VisualTreeHelper]::HitTest($dataGrid, $e.GetPosition($dataGrid)).VisualHit
+            $header = [System.Windows.Media.VisualTreeHelper]::HitTest($dataGrid, $columnHeaderEventArgs.GetPosition($dataGrid)).VisualHit
             
             # Navigate up the tree to find the column header
             while ($null -ne $header -and -not ($header -is [System.Windows.Controls.Primitives.DataGridColumnHeader])) {
@@ -1620,11 +1651,7 @@ try {
                 Write-DebugMessage -Message "Column header clicked: $columnName"
                 
                 # Call the sort function
-                $params = @{
-                    sender = $header
-                    e = $e
-                }
-                SortColumn_Click @params
+                SortColumn_Click -HeaderSender $header -RoutedEventArgs $columnHeaderEventArgs
             }
         }
         catch {
@@ -1644,8 +1671,49 @@ if (-not (Test-Requirements)) {
     exit
 }
 
+if ($script:ClientMode) {
+    Write-Log -Message "Running in client mode. AD actions are limited and sample data is used." -Level WARN
+    if ($null -ne $btnDelete) {
+        $btnDelete.IsEnabled = $false
+        $btnDelete.ToolTip = "Disabled in client mode"
+    }
+}
+
 # Initialize
 Update-BitLockerKeyTable
+
+# Search functionality enhancement
+# Add key press event to search textbox before GUI is shown
+if ($null -ne $txtSearch) {
+    $txtSearch.Add_KeyDown({
+        param($searchSender, $searchEventArgs)
+        
+        try {
+            # If Enter key is pressed, trigger search
+            if ($searchEventArgs.Key -eq 'Enter') {
+                $btnSearch.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
+            }
+        }
+        catch {
+            Write-Log -Message "Error in search textbox key handler: $_" -Level ERROR
+        }
+    })
+}
+
+# Ensure DataGrid row style is correctly applied on initial load
+if ($null -ne $dataGrid) {
+    $dataGrid.Add_Loaded({
+        try {
+            Write-DebugMessage -Message "DataGrid loaded, applying row styling"
+            if ($null -ne $dataGrid.ItemsSource) {
+                Update-RowStyling -DataGrid $dataGrid
+            }
+        }
+        catch {
+            Write-Log -Message "Error applying row styling after DataGrid load: $_" -Level ERROR
+        }
+    })
+}
 
 # Event for cleanup when closing window
 $window.Add_Closed({
@@ -1666,37 +1734,6 @@ $window.Title = $APPName
 Write-DebugMessage -Message "Starting GUI display"
 [void]$window.ShowDialog()
 #endregion
-
-# Search functionality enhancement
-# Add key press event to search textbox
-if ($null -ne $txtSearch) {
-    $txtSearch.Add_KeyDown({
-        param($sender, $e)
-        
-        try {
-            # If Enter key is pressed, trigger search
-            if ($e.Key -eq 'Enter') {
-                $btnSearch.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
-            }
-        }
-        catch {
-            Write-Log -Message "Error in search textbox key handler: $_" -Level ERROR
-        }
-    })
-}
-
-# Ensure DataGrid row style is correctly applied on initial load
-$dataGrid.Add_Loaded({
-    try {
-        Write-DebugMessage -Message "DataGrid loaded, applying row styling"
-        if ($null -ne $dataGrid.ItemsSource) {
-            Update-RowStyling -DataGrid $dataGrid
-        }
-    }
-    catch {
-        Write-Log -Message "Error applying row styling after DataGrid load: $_" -Level ERROR
-    }
-})
 
 # SIG # Begin signature block
 # MIIoiQYJKoZIhvcNAQcCoIIoejCCKHYCAQExDzANBglghkgBZQMEAgEFADB5Bgor

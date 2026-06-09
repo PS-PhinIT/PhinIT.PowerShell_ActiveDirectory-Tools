@@ -5,17 +5,33 @@ param(
     [switch]$OfflineOnly,
     [bool]$InstallMissingRequiredComponents = $true,
     [bool]$InstallOptionalComponents = $false,
+    [bool]$OfferOptionalComponents = $true,
+    [bool]$EnableAutoResumeScheduledTask = $true,
+    [bool]$OfferRestartAtEnd = $true,
+    [bool]$RestartAutomaticallyIfNeeded = $false,
     [switch]$AllowUnsupportedPythonVersion,
+    [switch]$ConfigureIis,
+    [switch]$CopyProjectData,
     [string]$InstallerCacheDir = "$env:TEMP\easyonb-v2-setup",
     [string]$OfflineCacheRoot = '',
+    [string]$InstallerManifestPath = '',
     [string]$ComponentLogRoot = '',
     [string]$SetupStatePath = '',
+    [string]$DeploymentRoot = '',
+    [string]$ProjectDataRoot = '',
+    [string]$ResumeScheduledTaskName = 'easyONBOARDING-V2-Setup-Resume',
+    [string]$IisSiteName = 'easyONBOARDING-V2',
+    [string]$IisAppPoolName = 'easyONBOARDING-V2',
+    [string]$IisPhysicalPath = '',
+    [int]$IisPort = 80,
+    [string]$IisHostHeader = '',
+    [int]$PythonBackendPort = 8010,
     [string[]]$PythonVersionCandidates = @('3.13.5', '3.13.4', '3.13.3', '3.13.2', '3.13.1', '3.13.0'),
     [string]$PythonInstallerUrl = '',
     [string]$PythonInstallerPath = '',
-    [string]$UrlRewriteInstallerUrl = 'https://download.microsoft.com/download/D/D/9/DD9A82C0-1D98-4C6E-A283-AB3A21A9EF57/rewrite_amd64_en-US.msi',
+    [string]$UrlRewriteInstallerUrl = '',
     [string]$UrlRewriteInstallerPath = '',
-    [string]$ArrInstallerUrl = '',
+    [string]$ArrInstallerUrl = 'https://go.microsoft.com/fwlink/?LinkID=615136',
     [string]$ArrInstallerPath = ''
 )
 
@@ -30,14 +46,33 @@ try { $OutputEncoding = $utf8NoBom } catch {}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:SetupScriptPath = $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($OfflineCacheRoot)) {
     $OfflineCacheRoot = Join-Path $projectRoot 'setup-cache'
+}
+if ([string]::IsNullOrWhiteSpace($InstallerManifestPath)) {
+    $InstallerManifestPath = Join-Path $OfflineCacheRoot 'installer-manifest.json'
 }
 if ([string]::IsNullOrWhiteSpace($ComponentLogRoot)) {
     $ComponentLogRoot = Join-Path $projectRoot 'logs\setup'
 }
 if ([string]::IsNullOrWhiteSpace($SetupStatePath)) {
     $SetupStatePath = Join-Path $ComponentLogRoot 'setup-state.json'
+}
+if ($PrepareOfflineCache -and (-not $PSBoundParameters.ContainsKey('SetupStatePath'))) {
+    $SetupStatePath = Join-Path $ComponentLogRoot 'setup-cacheprep-state.json'
+}
+if ([string]::IsNullOrWhiteSpace($DeploymentRoot)) {
+    $DeploymentRoot = Join-Path $projectRoot 'deploy'
+}
+if ([string]::IsNullOrWhiteSpace($ProjectDataRoot)) {
+    $ProjectDataRoot = Join-Path $DeploymentRoot 'project-data'
+}
+if ([string]::IsNullOrWhiteSpace($IisPhysicalPath)) {
+    $IisPhysicalPath = Join-Path $DeploymentRoot 'iis-site'
+}
+if ($ConfigureIis -and (-not $PSBoundParameters.ContainsKey('CopyProjectData'))) {
+    $CopyProjectData = $true
 }
 
 Push-Location $projectRoot
@@ -46,11 +81,12 @@ try {
     $script:SetupState = $null
     $script:ResumeDetected = $false
     $script:CurrentLogSessionDir = $null
+    $script:ManifestCache = $null
 
     function Write-Section {
         param([string]$Message)
 
-        Write-Host ""
+        Write-Host ''
         Write-Host "==> $Message" -ForegroundColor Cyan
     }
 
@@ -81,6 +117,58 @@ try {
         param([string]$CommandName)
 
         return [bool](Get-Command -Name $CommandName -ErrorAction SilentlyContinue)
+    }
+
+    function Test-InteractiveSession {
+        try {
+            if (-not [Environment]::UserInteractive) {
+                return $false
+            }
+
+            if ($null -eq $Host -or $null -eq $Host.UI) {
+                return $false
+            }
+
+            if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+                return $false
+            }
+
+            return $true
+        }
+        catch {
+            return $false
+        }
+    }
+
+    function Read-YesNoDecision {
+        param(
+            [string]$Caption,
+            [string]$Question,
+            [bool]$DefaultYes = $false
+        )
+
+        if (-not (Test-InteractiveSession)) {
+            return $false
+        }
+
+        try {
+            $choices = @(
+                [System.Management.Automation.Host.ChoiceDescription]::new('&Ja', 'Aktion jetzt ausfuehren.'),
+                [System.Management.Automation.Host.ChoiceDescription]::new('&Nein', 'Aktion spaeter manuell ausfuehren.')
+            )
+            $defaultIndex = if ($DefaultYes) { 0 } else { 1 }
+            $selection = $Host.UI.PromptForChoice($Caption, $Question, $choices, $defaultIndex)
+            return ($selection -eq 0)
+        }
+        catch {
+            $defaultPrompt = if ($DefaultYes) { 'J/n' } else { 'j/N' }
+            $answer = Read-Host "$Question [$defaultPrompt]"
+            if ([string]::IsNullOrWhiteSpace($answer)) {
+                return $DefaultYes
+            }
+
+            return $answer.Trim() -match '^(j|ja|y|yes)$'
+        }
     }
 
     function New-ComponentStatus {
@@ -166,9 +254,272 @@ try {
         return (Get-Date).ToUniversalTime().ToString('o')
     }
 
+    function Format-CommandArgument {
+        param([string]$Value)
+
+        if ($null -eq $Value) {
+            return '""'
+        }
+
+        $escapedValue = $Value.Replace('"', '\"')
+        if ($escapedValue -match '[\s"]') {
+            return '"' + $escapedValue + '"'
+        }
+
+        return $escapedValue
+    }
+
+    function Get-ResolvedPathString {
+        param([string]$Path)
+
+        return (Resolve-Path -Path $Path).Path
+    }
+
+    function Get-RelativePathFromRoot {
+        param(
+            [string]$RootPath,
+            [string]$ChildPath
+        )
+
+        $resolvedRoot = Get-ResolvedPathString -Path $RootPath
+        $resolvedChild = Get-ResolvedPathString -Path $ChildPath
+        $rootUri = [System.Uri]::new(($resolvedRoot.TrimEnd('\') + '\'))
+        $childUri = [System.Uri]::new($resolvedChild)
+        return [System.Uri]::UnescapeDataString($rootUri.MakeRelativeUri($childUri).ToString()) -replace '/', '\'
+    }
+
+    function Get-FileSha256Hash {
+        param([string]$Path)
+
+        return (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+    }
+
+    function Test-UsableFileSystemPath {
+        param([string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            return $false
+        }
+
+        $root = [System.IO.Path]::GetPathRoot($Path)
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            return $true
+        }
+
+        if ($root -match '^[A-Za-z]:\\$') {
+            return Test-Path -Path $root
+        }
+
+        return $true
+    }
+
+    function Get-ResumePathOrDefault {
+        param(
+            [string]$ResumeValue,
+            [string]$CurrentValue,
+            [string]$Label
+        )
+
+        if ([string]::IsNullOrWhiteSpace($ResumeValue)) {
+            return $CurrentValue
+        }
+
+        if (Test-UsableFileSystemPath -Path $ResumeValue) {
+            return $ResumeValue
+        }
+
+        Write-Detail -Level 'WARN' -Message "Resume-Konfiguration fuer $Label verweist auf ein nicht verfuegbares Laufwerk. Es wird der aktuelle Wert verwendet: $CurrentValue"
+        return $CurrentValue
+    }
+
+    function Import-ServerManagerModuleIfAvailable {
+        if (Get-Module -Name 'ServerManager') {
+            return
+        }
+
+        if (Get-Module -ListAvailable -Name 'ServerManager') {
+            Import-Module -Name 'ServerManager' -ErrorAction SilentlyContinue
+        }
+    }
+
+    function Get-WindowsFeatureInstallCommandName {
+        Import-ServerManagerModuleIfAvailable
+
+        if (Test-CommandAvailable -CommandName 'Install-WindowsFeature') {
+            return 'Install-WindowsFeature'
+        }
+
+        if (Test-CommandAvailable -CommandName 'Add-WindowsFeature') {
+            return 'Add-WindowsFeature'
+        }
+
+        return $null
+    }
+
+    function Get-RegistryDefaultValue {
+        param([string]$RegistryPath)
+
+        try {
+            $item = Get-ItemProperty -Path $RegistryPath -ErrorAction Stop
+            $defaultProperty = $item.PSObject.Properties['(default)']
+            if ($null -ne $defaultProperty -and -not [string]::IsNullOrWhiteSpace([string]$defaultProperty.Value)) {
+                return [string]$defaultProperty.Value
+            }
+        }
+        catch {
+        }
+
+        return ''
+    }
+
+    function Get-PythonInstallPathCandidates {
+        $candidatePaths = @()
+        $registryPaths = @(
+            'HKLM:\SOFTWARE\Python\PythonCore\3.13\InstallPath',
+            'HKCU:\SOFTWARE\Python\PythonCore\3.13\InstallPath',
+            'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore\3.13\InstallPath',
+            'HKCU:\SOFTWARE\WOW6432Node\Python\PythonCore\3.13\InstallPath',
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\python.exe',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\python.exe',
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\python3.exe',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\python3.exe'
+        )
+
+        foreach ($registryPath in $registryPaths) {
+            $defaultValue = Get-RegistryDefaultValue -RegistryPath $registryPath
+            if ([string]::IsNullOrWhiteSpace($defaultValue)) {
+                continue
+            }
+
+            if ($defaultValue -match '\.exe$') {
+                $candidatePaths += $defaultValue
+            }
+            else {
+                $candidatePaths += (Join-Path $defaultValue 'python.exe')
+                $candidatePaths += (Join-Path $defaultValue 'python3.exe')
+            }
+        }
+
+        return @($candidatePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    }
+
+    function Get-PythonLauncherPathCandidates {
+        $candidatePaths = @()
+        if (-not (Test-CommandAvailable -CommandName 'py')) {
+            return $candidatePaths
+        }
+
+        try {
+            $launcherOutput = & py -0p 2>$null
+            foreach ($line in @($launcherOutput)) {
+                if ([string]::IsNullOrWhiteSpace($line)) {
+                    continue
+                }
+
+                if ($line -match '^-V:3\.13(?:\S*)?\s+\*?\s*(.+)$') {
+                    $candidatePaths += $Matches[1].Trim()
+                }
+            }
+        }
+        catch {
+        }
+
+        return @($candidatePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    }
+
+    function Get-PythonKnownPathCandidates {
+        $candidatePaths = @(
+            (Join-Path $env:ProgramFiles 'Python313\python.exe'),
+            (Join-Path $env:ProgramFiles 'Python313\python3.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Python\Python313\python.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Python\Python313\python3.exe'),
+            'C:\Python313\python.exe',
+            'C:\Python313\python3.exe'
+        )
+
+        return @($candidatePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    }
+
+    function Find-PythonRuntime {
+        param([string[]]$PreferredPaths = @())
+
+        $candidateList = @(
+            @{ Type = 'Command'; FilePath = 'py'; Arguments = @('-3.13'); Label = 'py -3.13' },
+            @{ Type = 'Command'; FilePath = 'python'; Arguments = @(); Label = 'python' },
+            @{ Type = 'Command'; FilePath = 'python3.13'; Arguments = @(); Label = 'python3.13' }
+        )
+
+        $pathCandidates = @($PreferredPaths) + @(Get-PythonInstallPathCandidates) + @(Get-PythonLauncherPathCandidates) + @(Get-PythonKnownPathCandidates)
+        foreach ($pathCandidate in @($pathCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+            $candidateList += @{ Type = 'Path'; FilePath = $pathCandidate; Arguments = @(); Label = $pathCandidate }
+        }
+
+        $discovered = foreach ($candidate in $candidateList) {
+            $probe = Invoke-PythonProbe -Candidate $candidate
+            if ($probe) {
+                $probe
+            }
+        }
+
+        $selected = $discovered | Where-Object { $_.IsTargetPython } | Sort-Object Version -Descending | Select-Object -First 1
+        if (-not $selected) {
+            $selected = $discovered | Sort-Object Version -Descending | Select-Object -First 1
+        }
+
+        return $selected
+    }
+
+    function Get-UrlRewriteInstallerUrls {
+        if (-not [string]::IsNullOrWhiteSpace($UrlRewriteInstallerUrl)) {
+            return @($UrlRewriteInstallerUrl)
+        }
+
+        return @(
+            'https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi',
+            'https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_de-DE.msi'
+        )
+    }
+
+    function Get-ArrInstallerUrls {
+        if (-not [string]::IsNullOrWhiteSpace($ArrInstallerUrl)) {
+            return @($ArrInstallerUrl)
+        }
+
+        return @(
+            'https://go.microsoft.com/fwlink/?LinkID=615136'
+        )
+    }
+
+    function Set-DetectedPythonRuntime {
+        param(
+            [pscustomobject]$SetupStatus,
+            [psobject]$PythonRuntime
+        )
+
+        if ($null -eq $SetupStatus -or $null -eq $PythonRuntime) {
+            return $SetupStatus
+        }
+
+        $updatedStatuses = foreach ($status in $SetupStatus.Statuses) {
+            if ($status.Component -eq 'Python 3.13.x') {
+                $detail = "Erkannt ueber '$($PythonRuntime.Label)' mit Version $($PythonRuntime.Version) ($($PythonRuntime.Executable))."
+                $statusCode = if ($PythonRuntime.IsTargetPython) { 'OK' } else { 'WARN' }
+                New-ComponentStatus -Status $statusCode -Component 'Python 3.13.x' -Purpose $status.Purpose -Detail $detail -Required $true -Present $PythonRuntime.IsTargetPython
+            }
+            else {
+                $status
+            }
+        }
+
+        return [pscustomobject]@{
+            Statuses      = @($updatedStatuses)
+            PythonRuntime = $PythonRuntime
+        }
+    }
+
     function New-SetupStateObject {
         [pscustomobject]@{
-            SchemaVersion        = 1
+            SchemaVersion        = 3
             RunId                = 'setup-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
             CreatedUtc           = Get-UtcTimestamp
             UpdatedUtc           = Get-UtcTimestamp
@@ -176,6 +527,9 @@ try {
             PendingReboot        = $false
             PendingRebootReasons = @()
             ResumeRecommended    = $false
+            ResumeConfiguration  = $null
+            ResumeTaskName       = ''
+            ResumeTaskRegistered = $false
             CompletedActions     = @()
             Notes                = @()
             ComponentLogs        = @()
@@ -203,7 +557,7 @@ try {
     function Set-SetupStateDefaults {
         param([psobject]$State)
 
-        Set-StatePropertyDefault -Object $State -PropertyName 'SchemaVersion' -DefaultValue 1
+        Set-StatePropertyDefault -Object $State -PropertyName 'SchemaVersion' -DefaultValue 3
         Set-StatePropertyDefault -Object $State -PropertyName 'RunId' -DefaultValue ('setup-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
         Set-StatePropertyDefault -Object $State -PropertyName 'CreatedUtc' -DefaultValue (Get-UtcTimestamp)
         Set-StatePropertyDefault -Object $State -PropertyName 'UpdatedUtc' -DefaultValue (Get-UtcTimestamp)
@@ -211,6 +565,9 @@ try {
         Set-StatePropertyDefault -Object $State -PropertyName 'PendingReboot' -DefaultValue $false
         Set-StatePropertyDefault -Object $State -PropertyName 'PendingRebootReasons' -DefaultValue @()
         Set-StatePropertyDefault -Object $State -PropertyName 'ResumeRecommended' -DefaultValue $false
+        Set-StatePropertyDefault -Object $State -PropertyName 'ResumeConfiguration' -DefaultValue $null
+        Set-StatePropertyDefault -Object $State -PropertyName 'ResumeTaskName' -DefaultValue ''
+        Set-StatePropertyDefault -Object $State -PropertyName 'ResumeTaskRegistered' -DefaultValue $false
         Set-StatePropertyDefault -Object $State -PropertyName 'CompletedActions' -DefaultValue @()
         Set-StatePropertyDefault -Object $State -PropertyName 'Notes' -DefaultValue @()
         Set-StatePropertyDefault -Object $State -PropertyName 'ComponentLogs' -DefaultValue @()
@@ -221,6 +578,89 @@ try {
         $State.ComponentLogs = @($State.ComponentLogs)
         return $State
     }
+
+    function Get-CurrentResumeConfiguration {
+        return [pscustomobject]@{
+            WithDevDependencies              = [bool]$WithDevDependencies
+            InstallMissingRequiredComponents = [bool]$InstallMissingRequiredComponents
+            InstallOptionalComponents        = [bool]$InstallOptionalComponents
+            OfferOptionalComponents          = [bool]$OfferOptionalComponents
+            EnableAutoResumeScheduledTask    = [bool]$EnableAutoResumeScheduledTask
+            OfferRestartAtEnd                = [bool]$OfferRestartAtEnd
+            RestartAutomaticallyIfNeeded     = [bool]$RestartAutomaticallyIfNeeded
+            AllowUnsupportedPythonVersion    = [bool]$AllowUnsupportedPythonVersion
+            OfflineOnly                      = [bool]$OfflineOnly
+            ConfigureIis                     = [bool]$ConfigureIis
+            CopyProjectData                  = [bool]$CopyProjectData
+            InstallerCacheDir                = $InstallerCacheDir
+            OfflineCacheRoot                 = $OfflineCacheRoot
+            InstallerManifestPath            = $InstallerManifestPath
+            ComponentLogRoot                 = $ComponentLogRoot
+            SetupStatePath                   = $SetupStatePath
+            DeploymentRoot                   = $DeploymentRoot
+            ProjectDataRoot                  = $ProjectDataRoot
+            ResumeScheduledTaskName          = $ResumeScheduledTaskName
+            IisSiteName                      = $IisSiteName
+            IisAppPoolName                   = $IisAppPoolName
+            IisPhysicalPath                  = $IisPhysicalPath
+            IisPort                          = $IisPort
+            IisHostHeader                    = $IisHostHeader
+            PythonBackendPort                = $PythonBackendPort
+            PythonVersionCandidates          = @($PythonVersionCandidates)
+            PythonInstallerUrl               = $PythonInstallerUrl
+            PythonInstallerPath              = $PythonInstallerPath
+            UrlRewriteInstallerUrl           = $UrlRewriteInstallerUrl
+            UrlRewriteInstallerPath          = $UrlRewriteInstallerPath
+            ArrInstallerUrl                  = $ArrInstallerUrl
+            ArrInstallerPath                 = $ArrInstallerPath
+        }
+    }
+
+    #pragma warning disable PSUseApprovedVerbs
+    #pragma warning disable PSUseDeclaredVarsMoreThanAssignments
+    function Import-ResumeConfigurationFromState {
+        param([psobject]$State)
+
+        if ($null -eq $State.ResumeConfiguration) {
+            return
+        }
+
+        $config = $State.ResumeConfiguration
+        $script:WithDevDependencies = [bool]$config.WithDevDependencies
+        $script:InstallMissingRequiredComponents = [bool]$config.InstallMissingRequiredComponents
+        $script:InstallOptionalComponents = [bool]$config.InstallOptionalComponents
+        $script:OfferOptionalComponents = if ($null -ne $config.PSObject.Properties['OfferOptionalComponents']) { [bool]$config.OfferOptionalComponents } else { $OfferOptionalComponents }
+        $script:EnableAutoResumeScheduledTask = [bool]$config.EnableAutoResumeScheduledTask
+        $script:OfferRestartAtEnd = if ($null -ne $config.PSObject.Properties['OfferRestartAtEnd']) { [bool]$config.OfferRestartAtEnd } else { $OfferRestartAtEnd }
+        $script:RestartAutomaticallyIfNeeded = if ($null -ne $config.PSObject.Properties['RestartAutomaticallyIfNeeded']) { [bool]$config.RestartAutomaticallyIfNeeded } else { $RestartAutomaticallyIfNeeded }
+        $script:AllowUnsupportedPythonVersion = [bool]$config.AllowUnsupportedPythonVersion
+        $script:OfflineOnly = [bool]$config.OfflineOnly
+        $script:ConfigureIis = if ($null -ne $config.PSObject.Properties['ConfigureIis']) { [bool]$config.ConfigureIis } else { $ConfigureIis }
+        $script:CopyProjectData = if ($null -ne $config.PSObject.Properties['CopyProjectData']) { [bool]$config.CopyProjectData } else { $CopyProjectData }
+        $script:InstallerCacheDir = Get-ResumePathOrDefault -ResumeValue ([string]$config.InstallerCacheDir) -CurrentValue $InstallerCacheDir -Label 'InstallerCacheDir'
+        $script:OfflineCacheRoot = Get-ResumePathOrDefault -ResumeValue ([string]$config.OfflineCacheRoot) -CurrentValue $OfflineCacheRoot -Label 'OfflineCacheRoot'
+        $script:InstallerManifestPath = Get-ResumePathOrDefault -ResumeValue ([string]$config.InstallerManifestPath) -CurrentValue $InstallerManifestPath -Label 'InstallerManifestPath'
+        $script:ComponentLogRoot = Get-ResumePathOrDefault -ResumeValue ([string]$config.ComponentLogRoot) -CurrentValue $ComponentLogRoot -Label 'ComponentLogRoot'
+        $script:SetupStatePath = Get-ResumePathOrDefault -ResumeValue ([string]$config.SetupStatePath) -CurrentValue $SetupStatePath -Label 'SetupStatePath'
+        $script:DeploymentRoot = if ($null -ne $config.PSObject.Properties['DeploymentRoot']) { Get-ResumePathOrDefault -ResumeValue ([string]$config.DeploymentRoot) -CurrentValue $DeploymentRoot -Label 'DeploymentRoot' } else { $DeploymentRoot }
+        $script:ProjectDataRoot = if ($null -ne $config.PSObject.Properties['ProjectDataRoot']) { Get-ResumePathOrDefault -ResumeValue ([string]$config.ProjectDataRoot) -CurrentValue $ProjectDataRoot -Label 'ProjectDataRoot' } else { $ProjectDataRoot }
+        $script:ResumeScheduledTaskName = [string]$config.ResumeScheduledTaskName
+        $script:IisSiteName = if ($null -ne $config.PSObject.Properties['IisSiteName']) { [string]$config.IisSiteName } else { $IisSiteName }
+        $script:IisAppPoolName = if ($null -ne $config.PSObject.Properties['IisAppPoolName']) { [string]$config.IisAppPoolName } else { $IisAppPoolName }
+        $script:IisPhysicalPath = if ($null -ne $config.PSObject.Properties['IisPhysicalPath']) { Get-ResumePathOrDefault -ResumeValue ([string]$config.IisPhysicalPath) -CurrentValue $IisPhysicalPath -Label 'IisPhysicalPath' } else { $IisPhysicalPath }
+        $script:IisPort = if ($null -ne $config.PSObject.Properties['IisPort']) { [int]$config.IisPort } else { $IisPort }
+        $script:IisHostHeader = if ($null -ne $config.PSObject.Properties['IisHostHeader']) { [string]$config.IisHostHeader } else { $IisHostHeader }
+        $script:PythonBackendPort = if ($null -ne $config.PSObject.Properties['PythonBackendPort']) { [int]$config.PythonBackendPort } else { $PythonBackendPort }
+        $script:PythonVersionCandidates = @($config.PythonVersionCandidates)
+        $script:PythonInstallerUrl = [string]$config.PythonInstallerUrl
+        $script:PythonInstallerPath = [string]$config.PythonInstallerPath
+        $script:UrlRewriteInstallerUrl = [string]$config.UrlRewriteInstallerUrl
+        $script:UrlRewriteInstallerPath = [string]$config.UrlRewriteInstallerPath
+        $script:ArrInstallerUrl = [string]$config.ArrInstallerUrl
+        $script:ArrInstallerPath = [string]$config.ArrInstallerPath
+    }
+    #pragma warning restore PSUseDeclaredVarsMoreThanAssignments
+    #pragma warning restore PSUseApprovedVerbs
 
     function Get-SetupStateObject {
         if (Test-Path -Path $SetupStatePath) {
@@ -248,6 +688,12 @@ try {
         }
 
         $State | ConvertTo-Json -Depth 12 | Set-Content -Path $SetupStatePath -Encoding UTF8
+    }
+
+    function Update-SetupResumeConfiguration {
+        $script:SetupState.ResumeConfiguration = Get-CurrentResumeConfiguration
+        $script:SetupState.ResumeTaskName = $ResumeScheduledTaskName
+        Save-SetupState -State $script:SetupState
     }
 
     function Add-SetupCompletedAction {
@@ -322,9 +768,15 @@ try {
         New-DirectoryIfMissing -Path $OfflineCacheRoot
 
         $script:SetupState = Get-SetupStateObject
+        if ($script:ResumeDetected) {
+            Import-ResumeConfigurationFromState -State $script:SetupState
+        }
+
+        New-DirectoryIfMissing -Path $ComponentLogRoot
+        New-DirectoryIfMissing -Path $OfflineCacheRoot
         $script:CurrentLogSessionDir = Join-Path $ComponentLogRoot $script:SetupState.RunId
         New-DirectoryIfMissing -Path $script:CurrentLogSessionDir
-        Save-SetupState -State $script:SetupState
+        Update-SetupResumeConfiguration
 
         if ($script:ResumeDetected) {
             Write-Detail -Level 'INFO' -Message "Fortsetzung erkannt. Vorhandene State-Datei: $SetupStatePath"
@@ -371,8 +823,7 @@ try {
             return
         }
 
-        $line = "[$(Get-UtcTimestamp)][$Level] $Message"
-        Add-Content -Path $Context.LogPath -Value $line -Encoding UTF8
+        Add-Content -Path $Context.LogPath -Value "[$(Get-UtcTimestamp)][$Level] $Message" -Encoding UTF8
     }
 
     function Complete-ComponentLog {
@@ -404,6 +855,348 @@ try {
 
         $metadata | ConvertTo-Json -Depth 8 | Set-Content -Path $Context.MetadataPath -Encoding UTF8
         Add-SetupComponentLog -Entry $metadata
+    }
+
+    function New-InstallerManifestObject {
+        [pscustomobject]@{
+            SchemaVersion = 1
+            UpdatedUtc    = Get-UtcTimestamp
+            Installers    = @()
+        }
+    }
+
+    function Set-InstallerManifestDefaults {
+        param([psobject]$Manifest)
+
+        Set-StatePropertyDefault -Object $Manifest -PropertyName 'SchemaVersion' -DefaultValue 1
+        Set-StatePropertyDefault -Object $Manifest -PropertyName 'UpdatedUtc' -DefaultValue (Get-UtcTimestamp)
+        Set-StatePropertyDefault -Object $Manifest -PropertyName 'Installers' -DefaultValue @()
+        $Manifest.Installers = @($Manifest.Installers)
+        return $Manifest
+    }
+
+    function Get-InstallerManifestObject {
+        if ($null -ne $script:ManifestCache) {
+            return $script:ManifestCache
+        }
+
+        $manifestDirectory = Split-Path -Parent $InstallerManifestPath
+        if (-not [string]::IsNullOrWhiteSpace($manifestDirectory)) {
+            New-DirectoryIfMissing -Path $manifestDirectory
+        }
+
+        if (Test-Path -Path $InstallerManifestPath) {
+            try {
+                $loadedManifest = Get-Content -Path $InstallerManifestPath -Raw | ConvertFrom-Json
+                $script:ManifestCache = Set-InstallerManifestDefaults -Manifest $loadedManifest
+                return $script:ManifestCache
+            }
+            catch {
+                Write-Detail -Level 'WARN' -Message "Installer-Manifest ist unlesbar und wird neu aufgebaut: $($_.Exception.Message)"
+            }
+        }
+
+        $script:ManifestCache = New-InstallerManifestObject
+        return $script:ManifestCache
+    }
+
+    function Save-InstallerManifest {
+        param([psobject]$Manifest)
+
+        $Manifest.UpdatedUtc = Get-UtcTimestamp
+        $manifestDirectory = Split-Path -Parent $InstallerManifestPath
+        if (-not [string]::IsNullOrWhiteSpace($manifestDirectory)) {
+            New-DirectoryIfMissing -Path $manifestDirectory
+        }
+
+        $Manifest | ConvertTo-Json -Depth 12 | Set-Content -Path $InstallerManifestPath -Encoding UTF8
+        $script:ManifestCache = $Manifest
+    }
+
+    function Get-InstallerManifestEntry {
+        param([string]$RelativePath)
+
+        $manifest = Get-InstallerManifestObject
+        return $manifest.Installers | Where-Object { $_.RelativePath -eq $RelativePath } | Select-Object -First 1
+    }
+
+    function Update-InstallerManifestEntry {
+        param(
+            [string]$ComponentName,
+            [string]$InstallerPath,
+            [string]$Source,
+            [string]$SourceReference
+        )
+
+        $manifest = Get-InstallerManifestObject
+        $relativePath = Get-RelativePathFromRoot -RootPath $OfflineCacheRoot -ChildPath $InstallerPath
+        $hash = Get-FileSha256Hash -Path $InstallerPath
+        $fileItem = Get-Item -Path $InstallerPath
+        $entries = @($manifest.Installers)
+        $existingEntry = $entries | Where-Object { $_.RelativePath -eq $relativePath } | Select-Object -First 1
+
+        if ($existingEntry) {
+            $existingEntry.ComponentName = $ComponentName
+            $existingEntry.FileName = $fileItem.Name
+            $existingEntry.SizeBytes = [int64]$fileItem.Length
+            $existingEntry.Sha256 = $hash
+            $existingEntry.Source = $Source
+            $existingEntry.SourceReference = $SourceReference
+            $existingEntry.UpdatedUtc = Get-UtcTimestamp
+        }
+        else {
+            $entries += [pscustomobject]@{
+                ComponentName   = $ComponentName
+                RelativePath    = $relativePath
+                FileName        = $fileItem.Name
+                SizeBytes       = [int64]$fileItem.Length
+                Sha256          = $hash
+                Source          = $Source
+                SourceReference = $SourceReference
+                UpdatedUtc      = Get-UtcTimestamp
+            }
+            $manifest.Installers = $entries
+        }
+
+        Save-InstallerManifest -Manifest $manifest
+        return Get-InstallerManifestEntry -RelativePath $relativePath
+    }
+
+    function Test-InstallerManifestHash {
+        param(
+            [string]$ComponentName,
+            [string]$InstallerPath,
+            [psobject]$LogContext = $null
+        )
+
+        $relativePath = Get-RelativePathFromRoot -RootPath $OfflineCacheRoot -ChildPath $InstallerPath
+        $entry = Get-InstallerManifestEntry -RelativePath $relativePath
+        if ($null -eq $entry) {
+            Write-Detail -Level 'WARN' -Message "Kein Manifest-Eintrag fuer $ComponentName gefunden. Die Datei wird jetzt in das Manifest aufgenommen."
+            Write-ComponentLogEntry -Context $LogContext -Level 'WARN' -Message 'Kein Manifest-Eintrag gefunden. Datei wird nun in das Manifest aufgenommen.'
+            Update-InstallerManifestEntry -ComponentName $ComponentName -InstallerPath $InstallerPath -Source 'cache-untracked' -SourceReference '' | Out-Null
+            return
+        }
+
+        $currentHash = Get-FileSha256Hash -Path $InstallerPath
+        if ($currentHash -ne $entry.Sha256) {
+            throw "Hash-Pruefung fuer $ComponentName fehlgeschlagen. Erwartet: $($entry.Sha256), gefunden: $currentHash. Bitte den Offline-Cache neu vorbereiten."
+        }
+
+        Write-ComponentLogEntry -Context $LogContext -Level 'OK' -Message "SHA256 validiert: $currentHash"
+    }
+
+    function Get-ResumeTaskCommandLine {
+        $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $argumentList = @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            (Format-CommandArgument -Value $script:SetupScriptPath),
+            '-SetupStatePath',
+            (Format-CommandArgument -Value $SetupStatePath),
+            '-EnableAutoResumeScheduledTask:$true',
+            '-ResumeScheduledTaskName',
+            (Format-CommandArgument -Value $ResumeScheduledTaskName)
+        )
+
+        return [pscustomobject]@{
+            Execute   = $powershellPath
+            Arguments = ($argumentList -join ' ')
+        }
+    }
+
+    function Register-ResumeScheduledTaskIfPossible {
+        param([string[]]$Reasons)
+
+        $logContext = New-ComponentLogContext -Component 'Setup Auto Resume' -Action 'register-scheduled-task'
+        try {
+            if (-not $EnableAutoResumeScheduledTask) {
+                Write-Detail -Level 'WARN' -Message 'Automatische Fortsetzung per Scheduled Task ist deaktiviert.'
+                Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Auto-Resume deaktiviert.'
+                Complete-ComponentLog -Context $logContext -Outcome 'skipped' -ExitCode 0 -Notes @('AutoResumeDisabled')
+                return $false
+            }
+
+            if (-not (Test-IsAdministrator)) {
+                Write-Detail -Level 'WARN' -Message 'Kein Administrator-Kontext. Scheduled Task fuer Auto-Resume kann nicht registriert werden.'
+                Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Administratorrechte fehlen.'
+                Complete-ComponentLog -Context $logContext -Outcome 'skipped' -ExitCode 0 -Notes @('NotAdministrator')
+                return $false
+            }
+
+            $requiredCommands = @('Register-ScheduledTask', 'New-ScheduledTaskAction', 'New-ScheduledTaskTrigger', 'New-ScheduledTaskSettingsSet', 'New-ScheduledTaskPrincipal')
+            foreach ($commandName in $requiredCommands) {
+                if (-not (Test-CommandAvailable -CommandName $commandName)) {
+                    Write-Detail -Level 'WARN' -Message "Cmdlet $commandName ist nicht verfuegbar. Scheduled Task fuer Auto-Resume kann nicht registriert werden."
+                    Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message "Cmdlet fehlt: $commandName"
+                    Complete-ComponentLog -Context $logContext -Outcome 'skipped' -ExitCode 0 -Notes @("MissingCommand:$commandName")
+                    return $false
+                }
+            }
+
+            $taskCommandLine = Get-ResumeTaskCommandLine
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Execute: $($taskCommandLine.Execute)"
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Arguments: $($taskCommandLine.Arguments)"
+
+            if (Test-CommandAvailable -CommandName 'Get-ScheduledTask') {
+                $existingTask = Get-ScheduledTask -TaskName $ResumeScheduledTaskName -ErrorAction SilentlyContinue
+                if ($existingTask) {
+                    Unregister-ScheduledTask -TaskName $ResumeScheduledTaskName -Confirm:$false -ErrorAction SilentlyContinue
+                }
+            }
+
+            $taskAction = New-ScheduledTaskAction -Execute $taskCommandLine.Execute -Argument $taskCommandLine.Arguments
+            $taskTrigger = New-ScheduledTaskTrigger -AtStartup
+            $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+            $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+
+            Register-ScheduledTask -TaskName $ResumeScheduledTaskName -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal -Force | Out-Null
+
+            $script:SetupState.ResumeTaskRegistered = $true
+            $script:SetupState.ResumeTaskName = $ResumeScheduledTaskName
+            Add-SetupCompletedAction -Action 'scheduled-task:registered'
+            Add-SetupNote -Note ('Auto-Resume Scheduled Task registriert: ' + $ResumeScheduledTaskName)
+            Write-Detail -Level 'OK' -Message "Scheduled Task fuer automatische Fortsetzung registriert: $ResumeScheduledTaskName"
+            Write-ComponentLogEntry -Context $logContext -Level 'OK' -Message ('Gruende: ' + ($Reasons -join ', '))
+            Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode 0
+            return $true
+        }
+        catch {
+            Write-Detail -Level 'WARN' -Message "Scheduled Task fuer Auto-Resume konnte nicht registriert werden: $($_.Exception.Message)"
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
+            return $false
+        }
+    }
+
+    function Unregister-ResumeScheduledTaskIfPresent {
+        $logContext = New-ComponentLogContext -Component 'Setup Auto Resume' -Action 'remove-scheduled-task'
+        try {
+            if (-not (Test-CommandAvailable -CommandName 'Unregister-ScheduledTask')) {
+                Complete-ComponentLog -Context $logContext -Outcome 'skipped' -ExitCode 0 -Notes @('Unregister-ScheduledTaskNotAvailable')
+                return
+            }
+
+            $removed = $false
+            if (Test-CommandAvailable -CommandName 'Get-ScheduledTask') {
+                $existingTask = Get-ScheduledTask -TaskName $ResumeScheduledTaskName -ErrorAction SilentlyContinue
+                if ($existingTask) {
+                    Unregister-ScheduledTask -TaskName $ResumeScheduledTaskName -Confirm:$false -ErrorAction SilentlyContinue
+                    $removed = $true
+                }
+            }
+            else {
+                Unregister-ScheduledTask -TaskName $ResumeScheduledTaskName -Confirm:$false -ErrorAction SilentlyContinue
+                $removed = $true
+            }
+
+            if ($removed) {
+                Write-Detail -Level 'OK' -Message "Scheduled Task fuer Auto-Resume entfernt: $ResumeScheduledTaskName"
+                Write-ComponentLogEntry -Context $logContext -Level 'OK' -Message 'Scheduled Task entfernt.'
+                Add-SetupCompletedAction -Action 'scheduled-task:removed'
+                $script:SetupState.ResumeTaskRegistered = $false
+                Save-SetupState -State $script:SetupState
+                Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode 0
+            }
+            else {
+                Complete-ComponentLog -Context $logContext -Outcome 'skipped' -ExitCode 0 -Notes @('TaskNotFound')
+            }
+        }
+        catch {
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
+        }
+    }
+
+    function Write-SetupRunSummary {
+        param(
+            [ValidateSet('success', 'pending-reboot', 'failed', 'prepared-cache')]
+            [string]$FinalStatus,
+            [string]$Message = ''
+        )
+
+        if ($null -eq $script:SetupState -or [string]::IsNullOrWhiteSpace($script:CurrentLogSessionDir)) {
+            return
+        }
+
+        $summaryJsonPath = Join-Path $script:CurrentLogSessionDir 'run-summary.json'
+        $summaryMarkdownPath = Join-Path $script:CurrentLogSessionDir 'run-summary.md'
+
+        $summary = [pscustomobject]@{
+            RunId                 = $script:SetupState.RunId
+            FinalStatus           = $FinalStatus
+            Message               = $Message
+            LastPhase             = $script:SetupState.LastPhase
+            PendingReboot         = $script:SetupState.PendingReboot
+            PendingRebootReasons  = @($script:SetupState.PendingRebootReasons)
+            ResumeTaskName        = $script:SetupState.ResumeTaskName
+            ResumeTaskRegistered  = $script:SetupState.ResumeTaskRegistered
+            CompletedActions      = @($script:SetupState.CompletedActions)
+            Notes                 = @($script:SetupState.Notes)
+            ComponentLogs         = @($script:SetupState.ComponentLogs)
+            InstallerManifestPath = $InstallerManifestPath
+            GeneratedUtc          = Get-UtcTimestamp
+        }
+
+        $summary | ConvertTo-Json -Depth 12 | Set-Content -Path $summaryJsonPath -Encoding UTF8
+
+        $markdownLines = @(
+            '# Setup Run Summary',
+            '',
+            ('- RunId: `{0}`' -f $summary.RunId),
+            ('- FinalStatus: `{0}`' -f $summary.FinalStatus),
+            ('- LastPhase: `{0}`' -f $summary.LastPhase),
+            ('- PendingReboot: `{0}`' -f $summary.PendingReboot),
+            ('- ResumeTaskRegistered: `{0}`' -f $summary.ResumeTaskRegistered),
+            ('- InstallerManifestPath: `{0}`' -f $summary.InstallerManifestPath)
+        )
+
+        if (-not [string]::IsNullOrWhiteSpace($Message)) {
+            $markdownLines += ''
+            $markdownLines += '## Message'
+            $markdownLines += ''
+            $markdownLines += $Message
+        }
+
+        if ($summary.PendingRebootReasons.Count -gt 0) {
+            $markdownLines += ''
+            $markdownLines += '## Pending Reboot Reasons'
+            $markdownLines += ''
+            foreach ($reason in $summary.PendingRebootReasons) {
+                $markdownLines += ('- {0}' -f $reason)
+            }
+        }
+
+        if ($summary.CompletedActions.Count -gt 0) {
+            $markdownLines += ''
+            $markdownLines += '## Completed Actions'
+            $markdownLines += ''
+            foreach ($action in $summary.CompletedActions) {
+                $markdownLines += ('- {0}' -f $action)
+            }
+        }
+
+        if ($summary.Notes.Count -gt 0) {
+            $markdownLines += ''
+            $markdownLines += '## Notes'
+            $markdownLines += ''
+            foreach ($note in $summary.Notes) {
+                $markdownLines += ('- {0}' -f $note)
+            }
+        }
+
+        if ($summary.ComponentLogs.Count -gt 0) {
+            $markdownLines += ''
+            $markdownLines += '## Component Logs'
+            $markdownLines += ''
+            foreach ($componentLog in $summary.ComponentLogs) {
+                $markdownLines += ('- {0} / {1}: {2} (ExitCode: {3})' -f $componentLog.Component, $componentLog.Action, $componentLog.Outcome, $componentLog.ExitCode)
+            }
+        }
+
+        $markdownLines | Set-Content -Path $summaryMarkdownPath -Encoding UTF8
     }
 
     function Get-PendingRebootState {
@@ -441,8 +1234,48 @@ try {
         Start-SetupSession
         Set-SetupPhase -Phase $Phase
         Set-SetupRebootPending -Reasons $Reasons
+        $registered = Register-ResumeScheduledTaskIfPossible -Reasons $Reasons
+        if ($registered) {
+            Write-Detail -Level 'INFO' -Message 'Auto-Resume wurde registriert. Das Setup setzt sich nach dem Reboot automatisch fort.'
+        }
+        else {
+            Write-Detail -Level 'WARN' -Message 'Auto-Resume wurde nicht registriert. Bitte nach dem Reboot das Skript erneut starten.'
+        }
+
         Write-Detail -Level 'WARN' -Message ('Neustart erforderlich oder ausstehend: ' + (($Reasons | Sort-Object -Unique) -join ', '))
-        Write-Detail -Level 'WARN' -Message "Nach dem Reboot dieses Skript erneut aufrufen. Die Fortsetzung erfolgt automatisch ueber $SetupStatePath."
+        Write-Detail -Level 'WARN' -Message "Nach dem Reboot dieses Skript erneut aufrufen. State-Datei: $SetupStatePath"
+        Write-SetupRunSummary -FinalStatus 'pending-reboot' -Message 'Setup wurde kontrolliert pausiert und wartet auf einen Neustart.'
+
+        if ($OfferRestartAtEnd) {
+            $uniqueReasons = @($Reasons | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+            if ($RestartAutomaticallyIfNeeded) {
+                try {
+                    Write-Detail -Level 'WARN' -Message 'Automatischer Neustart ist aktiviert. Der Server wird jetzt neu gestartet.'
+                    Restart-Computer -Force
+                }
+                catch {
+                    Write-Detail -Level 'WARN' -Message "Automatischer Neustart konnte nicht gestartet werden: $($_.Exception.Message)"
+                }
+            }
+            elseif (Test-InteractiveSession) {
+                $shouldRestartNow = Read-YesNoDecision -Caption 'Neustart empfohlen' -Question ("Das Setup kann jetzt neu starten und danach fortsetzen. Neustart jetzt ausfuehren? Gruende: " + ($uniqueReasons -join ', ')) -DefaultYes $true
+                if ($shouldRestartNow) {
+                    try {
+                        Restart-Computer -Force
+                    }
+                    catch {
+                        Write-Detail -Level 'WARN' -Message "Neustart konnte nicht gestartet werden: $($_.Exception.Message)"
+                    }
+                }
+                else {
+                    Write-Detail -Level 'INFO' -Message 'Neustart wurde nicht automatisch ausgelost. Bitte den Server zeitnah manuell neu starten.'
+                }
+            }
+            else {
+                Write-Detail -Level 'INFO' -Message 'Nicht-interaktive Sitzung erkannt. Ein sofortiger Neustart wird daher nicht abgefragt.'
+            }
+        }
+
         return $true
     }
 
@@ -485,27 +1318,36 @@ try {
     function Get-WindowsServerBaselineStatus {
         $os = Get-CimInstance -ClassName Win32_OperatingSystem
         $buildNumber = [int]$os.BuildNumber
-        $isServer = $os.ProductType -eq 3
+        $isServer = ($os.ProductType -eq 3) -or ($os.Caption -match 'Windows Server')
 
         $serverProfile = switch ($buildNumber) {
+            9600 { 'Windows Server 2012 R2' }
             14393 { 'Windows Server 2016' }
             17763 { 'Windows Server 2019' }
             20348 { 'Windows Server 2022' }
+            26100 { 'Windows Server 2025' }
             default { $null }
         }
 
-        if ($isServer -and $serverProfile) {
-            $preferredNote = if ($buildNumber -in 17763, 20348) {
+        if ($isServer -and ($serverProfile -or $buildNumber -ge 9600)) {
+            if (-not $serverProfile) {
+                $serverProfile = $os.Caption
+            }
+
+            $preferredNote = if ($buildNumber -in 17763, 20348, 26100) {
                 'Bevorzugtes Standardprofil erkannt.'
             }
+            elseif ($buildNumber -eq 9600) {
+                'Aelteres Serverprofil erkannt. Installation wird toleriert; Python-/IIS-Kompatibilitaet sollte auf dem Host zusaetzlich validiert werden.'
+            }
             else {
-                'Unterstuetzt, aber 2019/2022 sind als Standardprofil bevorzugt.'
+                'Unterstuetzt, aber 2019/2022/2025 sind als Standardprofil bevorzugt.'
             }
 
-            return New-ComponentStatus -Status 'OK' -Component 'Windows Server Basisprofil' -Purpose 'Betrieb der V2-Management-Server-Rolle auf Windows Server 2016/2019/2022.' -Detail "$($os.Caption) (Build $buildNumber). $preferredNote" -Required $true -Present $true
+            return New-ComponentStatus -Status 'OK' -Component 'Windows Server Basisprofil' -Purpose 'Betrieb der V2-Management-Server-Rolle auf Windows Server ab Build 9600; bevorzugt 2019/2022/2025.' -Detail "$serverProfile (Build $buildNumber). $preferredNote" -Required $true -Present $true
         }
 
-        return New-ComponentStatus -Status 'WARN' -Component 'Windows Server Basisprofil' -Purpose 'Betrieb der V2-Management-Server-Rolle auf Windows Server 2016/2019/2022.' -Detail "Erkannt: $($os.Caption) (Build $buildNumber). Fuer den Management Server sind Windows Server 2016/2019/2022 vorgesehen; 2019 oder 2022 werden bevorzugt." -Required $true -Present $false
+        return New-ComponentStatus -Status 'WARN' -Component 'Windows Server Basisprofil' -Purpose 'Betrieb der V2-Management-Server-Rolle auf Windows Server ab Build 9600; bevorzugt 2019/2022/2025.' -Detail "Erkannt: $($os.Caption) (Build $buildNumber). Fuer den Management Server werden Windows-Server-Profile ab Build 9600 erwartet; 2019, 2022 oder 2025 werden bevorzugt." -Required $true -Present $false
     }
 
     function Get-WindowsFeatureStatus {
@@ -515,6 +1357,8 @@ try {
             [string]$Purpose,
             [bool]$Required
         )
+
+        Import-ServerManagerModuleIfAvailable
 
         if (-not (Test-CommandAvailable -CommandName 'Get-WindowsFeature')) {
             return New-ComponentStatus -Status 'INFO' -Component $Component -Purpose $Purpose -Detail 'Featurestatus konnte nicht automatisch geprueft werden, da Get-WindowsFeature nicht verfuegbar ist.' -Required $Required -Present $false -AutoInstallable $true -InstallName $FeatureName
@@ -606,26 +1450,7 @@ try {
     }
 
     function Get-PythonRuntimeStatus {
-        $candidateList = @(
-            @{ Type = 'Command'; FilePath = 'py'; Arguments = @('-3.13'); Label = 'py -3.13' },
-            @{ Type = 'Command'; FilePath = 'python'; Arguments = @(); Label = 'python' },
-            @{ Type = 'Command'; FilePath = 'python3.13'; Arguments = @(); Label = 'python3.13' },
-            @{ Type = 'Path'; FilePath = (Join-Path $env:ProgramFiles 'Python313\python.exe'); Arguments = @(); Label = 'ProgramFiles Python313' },
-            @{ Type = 'Path'; FilePath = (Join-Path $env:LocalAppData 'Programs\Python\Python313\python.exe'); Arguments = @(); Label = 'LocalAppData Python313' },
-            @{ Type = 'Path'; FilePath = 'C:\Python313\python.exe'; Arguments = @(); Label = 'C:\Python313\python.exe' }
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_.FilePath) }
-
-        $discovered = foreach ($candidate in $candidateList) {
-            $probe = Invoke-PythonProbe -Candidate $candidate
-            if ($probe) {
-                $probe
-            }
-        }
-
-        $selected = $discovered | Where-Object { $_.IsTargetPython } | Sort-Object Version -Descending | Select-Object -First 1
-        if (-not $selected) {
-            $selected = $discovered | Sort-Object Version -Descending | Select-Object -First 1
-        }
+        $selected = Find-PythonRuntime
 
         if (-not $selected) {
             return [pscustomobject]@{
@@ -873,16 +1698,13 @@ try {
                 throw "Explizit angegebener Installer fuer $ComponentName wurde nicht gefunden: $ExplicitPath"
             }
 
-            if ((Resolve-Path -Path $ExplicitPath).Path -ne $preferredCachePath) {
+            if ((Get-ResolvedPathString -Path $ExplicitPath) -ne $preferredCachePath) {
                 Copy-Item -Path $ExplicitPath -Destination $preferredCachePath -Force
                 Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Expliziter Installer wurde in den Offline-Cache kopiert: $preferredCachePath"
-                return [pscustomobject]@{
-                    Path      = $preferredCachePath
-                    Source    = 'explicit-path-cached'
-                    CachePath = $preferredCachePath
-                }
             }
 
+            $manifestEntry = Update-InstallerManifestEntry -ComponentName $ComponentName -InstallerPath $preferredCachePath -Source 'explicit-path' -SourceReference $ExplicitPath
+            Write-ComponentLogEntry -Context $LogContext -Level 'OK' -Message "Manifest aktualisiert: $($manifestEntry.RelativePath) ($($manifestEntry.Sha256))"
             return [pscustomobject]@{
                 Path      = $preferredCachePath
                 Source    = 'explicit-path'
@@ -891,7 +1713,7 @@ try {
         }
 
         if (Test-Path -Path $preferredCachePath) {
-            Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Installer aus Offline-Cache verwendet: $preferredCachePath"
+            Test-InstallerManifestHash -ComponentName $ComponentName -InstallerPath $preferredCachePath -LogContext $LogContext
             return [pscustomobject]@{
                 Path      = $preferredCachePath
                 Source    = 'offline-cache'
@@ -903,7 +1725,9 @@ try {
             $match = Get-ChildItem -Path $cacheDirectory -File -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($match) {
                 Copy-Item -Path $match.FullName -Destination $preferredCachePath -Force
-                Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Cache-Treffer fuer $ComponentName gefunden und auf Standardnamen vereinheitlicht: $preferredCachePath"
+                Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "Cache-Treffer gefunden und auf Standardnamen vereinheitlicht: $preferredCachePath"
+                Update-InstallerManifestEntry -ComponentName $ComponentName -InstallerPath $preferredCachePath -Source 'offline-cache-pattern' -SourceReference $match.FullName | Out-Null
+                Test-InstallerManifestHash -ComponentName $ComponentName -InstallerPath $preferredCachePath -LogContext $LogContext
                 return [pscustomobject]@{
                     Path      = $preferredCachePath
                     Source    = 'offline-cache-pattern'
@@ -921,6 +1745,8 @@ try {
         }
 
         $downloadedPath = Save-WebFile -Urls $Urls -DestinationPath $preferredCachePath -LogContext $LogContext
+        $manifestEntry = Update-InstallerManifestEntry -ComponentName $ComponentName -InstallerPath $downloadedPath -Source 'downloaded-and-cached' -SourceReference ($Urls -join ', ')
+        Write-ComponentLogEntry -Context $LogContext -Level 'OK' -Message "Manifest aktualisiert: $($manifestEntry.RelativePath) ($($manifestEntry.Sha256))"
         return [pscustomobject]@{
             Path      = $downloadedPath
             Source    = 'downloaded-and-cached'
@@ -965,8 +1791,6 @@ try {
             return [pscustomobject]@{
                 RebootRequired = ($process.ExitCode -eq 3010)
                 ExitCode       = $process.ExitCode
-                LogPath        = $logContext.LogPath
-                ExtraLogPath   = $msiLogPath
             }
         }
         catch {
@@ -984,19 +1808,37 @@ try {
             Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Installerpfad: $($installerSource.Path)"
 
             $argumentList = @('/quiet', 'PrependPath=1', 'Include_pip=1', 'Include_launcher=1', 'Shortcuts=0', 'CompileAll=0')
+            $targetDir = ''
             if (Test-IsAdministrator) {
                 $argumentList += 'InstallAllUsers=1'
+                $targetDir = Join-Path $env:ProgramFiles 'Python313'
             }
             else {
                 Write-Detail -Level 'WARN' -Message 'Keine Administratorrechte erkannt. Python wird fuer den aktuellen Benutzer installiert.'
                 Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Keine Administratorrechte erkannt. Installation erfolgt benutzerbezogen.'
                 $argumentList += 'InstallAllUsers=0'
+                $targetDir = Join-Path $env:LocalAppData 'Programs\Python\Python313'
             }
+
+            $argumentList += ('TargetDir={0}' -f $targetDir)
+            Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Python-Zielverzeichnis: $targetDir"
 
             Write-Section -Message 'Installiere Python 3.13.x'
             $process = Start-Process -FilePath $installerSource.Path -ArgumentList $argumentList -Wait -PassThru
             if ($process.ExitCode -notin 0, 3010) {
                 throw "Python 3.13.x konnte nicht installiert werden. Exitcode: $($process.ExitCode)"
+            }
+
+            $detectedPythonRuntime = Find-PythonRuntime -PreferredPaths @(
+                (Join-Path $targetDir 'python.exe'),
+                (Join-Path $targetDir 'python3.exe')
+            )
+
+            if ($null -ne $detectedPythonRuntime) {
+                Write-ComponentLogEntry -Context $logContext -Level 'OK' -Message "Python nach Installation erkannt: $($detectedPythonRuntime.Executable)"
+            }
+            else {
+                Write-ComponentLogEntry -Context $logContext -Level 'WARN' -Message 'Python wurde nach der Installation im selben Lauf noch nicht erneut erkannt.'
             }
 
             Add-SetupCompletedAction -Action 'installer:python-runtime'
@@ -1015,6 +1857,7 @@ try {
             return [pscustomobject]@{
                 RebootRequired = ($process.ExitCode -eq 3010)
                 RebootReasons  = if ($process.ExitCode -eq 3010) { @('PythonInstaller:3010') } else { @() }
+                PythonRuntime  = $detectedPythonRuntime
             }
         }
         catch {
@@ -1030,14 +1873,16 @@ try {
         $result = [pscustomobject]@{
             RebootRequired = $false
             RebootReasons  = @()
+            PythonRuntime  = $null
         }
 
         if (-not $InstallMissingRequiredComponents) {
             return $result
         }
 
-        if (-not (Test-CommandAvailable -CommandName 'Install-WindowsFeature')) {
-            Write-Detail -Level 'WARN' -Message 'Install-WindowsFeature ist auf diesem Host nicht verfuegbar. Windows-Features konnten nicht automatisch installiert werden.'
+        $installWindowsFeatureCommand = Get-WindowsFeatureInstallCommandName
+        if ([string]::IsNullOrWhiteSpace($installWindowsFeatureCommand)) {
+            Write-Detail -Level 'WARN' -Message 'Weder Install-WindowsFeature noch Add-WindowsFeature sind auf diesem Host verfuegbar. Windows-Features konnten nicht automatisch installiert werden.'
             return $result
         }
 
@@ -1058,8 +1903,17 @@ try {
             $logContext = New-ComponentLogContext -Component $feature.Component -Action 'install-windows-feature'
             try {
                 Write-Section -Message "Installiere Windows-Feature: $($feature.Component) ($($feature.InstallName))"
-                Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "Install-WindowsFeature Name=$($feature.InstallName)"
-                $installResult = Install-WindowsFeature -Name $feature.InstallName -IncludeManagementTools -ErrorAction Stop
+                Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message "$installWindowsFeatureCommand Name=$($feature.InstallName)"
+                $installCommand = Get-Command -Name $installWindowsFeatureCommand -ErrorAction Stop
+                $featureArguments = @{
+                    Name        = $feature.InstallName
+                    ErrorAction = 'Stop'
+                }
+                if ($installWindowsFeatureCommand -eq 'Install-WindowsFeature') {
+                    $featureArguments.IncludeManagementTools = $true
+                }
+
+                $installResult = & $installCommand @featureArguments
                 Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message (($installResult | Format-List * | Out-String).Trim())
 
                 $restartNeeded = $false
@@ -1099,13 +1953,16 @@ try {
             RebootReasons  = @()
         }
 
-        if (-not $InstallMissingRequiredComponents) {
+        if ((-not $InstallMissingRequiredComponents) -and (-not $InstallOptionalComponents)) {
             return $result
         }
 
         $pythonStatus = $Statuses | Where-Object { $_.Component -eq 'Python 3.13.x' } | Select-Object -First 1
-        if ($pythonStatus -and (-not $pythonStatus.Present)) {
+        if ($InstallMissingRequiredComponents -and $pythonStatus -and (-not $pythonStatus.Present)) {
             $pythonInstallResult = Install-PythonRuntime
+            if ($null -ne $pythonInstallResult.PythonRuntime) {
+                $result.PythonRuntime = $pythonInstallResult.PythonRuntime
+            }
             if ($pythonInstallResult.RebootRequired) {
                 $result.RebootRequired = $true
                 $result.RebootReasons += @($pythonInstallResult.RebootReasons)
@@ -1113,10 +1970,10 @@ try {
         }
 
         $urlRewriteStatus = $Statuses | Where-Object { $_.Component -eq 'IIS URL Rewrite' } | Select-Object -First 1
-        if ($urlRewriteStatus -and (-not $urlRewriteStatus.Present)) {
+        if ($InstallMissingRequiredComponents -and $urlRewriteStatus -and (-not $urlRewriteStatus.Present)) {
             try {
                 $rewriteSourceContext = New-ComponentLogContext -Component 'IIS URL Rewrite' -Action 'resolve-installer'
-                $rewriteInstaller = Get-InstallerSource -ComponentName 'IIS URL Rewrite' -CacheSubPath 'iis\url-rewrite' -PreferredFileName 'rewrite_amd64_en-US.msi' -SearchPatterns @('rewrite*.msi', '*url*rewrite*.msi') -ExplicitPath $UrlRewriteInstallerPath -Urls @($UrlRewriteInstallerUrl) -LogContext $rewriteSourceContext
+                $rewriteInstaller = Get-InstallerSource -ComponentName 'IIS URL Rewrite' -CacheSubPath 'iis\url-rewrite' -PreferredFileName 'rewrite_amd64_en-US.msi' -SearchPatterns @('rewrite*.msi', '*url*rewrite*.msi') -ExplicitPath $UrlRewriteInstallerPath -Urls (Get-UrlRewriteInstallerUrls) -LogContext $rewriteSourceContext
                 Write-ComponentLogEntry -Context $rewriteSourceContext -Level 'OK' -Message "Installerquelle: $($rewriteInstaller.Source) / $($rewriteInstaller.Path)"
                 Complete-ComponentLog -Context $rewriteSourceContext -Outcome 'success' -ExitCode 0
 
@@ -1137,7 +1994,7 @@ try {
             if ($arrStatus -and (-not $arrStatus.Present)) {
                 try {
                     $arrSourceContext = New-ComponentLogContext -Component 'IIS Application Request Routing (ARR)' -Action 'resolve-installer'
-                    $arrInstaller = Get-InstallerSource -ComponentName 'IIS Application Request Routing (ARR)' -CacheSubPath 'iis\arr' -PreferredFileName 'arr-x64.msi' -SearchPatterns @('*application*request*routing*.msi', '*arr*.msi') -ExplicitPath $ArrInstallerPath -Urls @($ArrInstallerUrl) -LogContext $arrSourceContext
+                    $arrInstaller = Get-InstallerSource -ComponentName 'IIS Application Request Routing (ARR)' -CacheSubPath 'iis\arr' -PreferredFileName 'arr-x64.msi' -SearchPatterns @('*application*request*routing*.msi', '*arr*.msi') -ExplicitPath $ArrInstallerPath -Urls (Get-ArrInstallerUrls) -LogContext $arrSourceContext
                     Write-ComponentLogEntry -Context $arrSourceContext -Level 'OK' -Message "Installerquelle: $($arrInstaller.Source) / $($arrInstaller.Path)"
                     Complete-ComponentLog -Context $arrSourceContext -Outcome 'success' -ExitCode 0
 
@@ -1156,6 +2013,238 @@ try {
 
         $result.RebootReasons = @($result.RebootReasons | Sort-Object -Unique)
         return $result
+    }
+
+    function Resolve-OptionalComponentSelection {
+        param([object[]]$Statuses)
+
+        if ($InstallOptionalComponents) {
+            return $true
+        }
+
+        $supportedOptionals = @(
+            $Statuses | Where-Object { $_.Component -eq 'IIS Application Request Routing (ARR)' -and -not $_.Present }
+        ) | Where-Object { $null -ne $_ }
+
+        if (-not $supportedOptionals) {
+            return $false
+        }
+
+        $supportedNames = ($supportedOptionals | Select-Object -ExpandProperty Component | Sort-Object -Unique)
+        if (-not $OfferOptionalComponents) {
+            Write-Detail -Level 'INFO' -Message ('Optionale Komponenten verfuegbar, aber Nachfrage ist deaktiviert: ' + ($supportedNames -join ', '))
+            return $false
+        }
+
+        if (-not (Test-InteractiveSession)) {
+            Write-Detail -Level 'INFO' -Message ('Optionale Komponenten verfuegbar. In nicht-interaktiver Sitzung bitte bei Bedarf explizit mit -InstallOptionalComponents:$true starten: ' + ($supportedNames -join ', '))
+            return $false
+        }
+
+        Write-Section -Message 'Optionale Komponenten erkannt'
+        Write-Detail -Level 'INFO' -Message ('Optional installierbar in diesem Lauf: ' + ($supportedNames -join ', '))
+        $shouldInstallOptionals = Read-YesNoDecision -Caption 'Optionale Komponenten' -Question ('Sollen die aktuell unterstuetzten optionalen Komponenten jetzt mit installiert werden? ' + ($supportedNames -join ', ')) -DefaultYes $false
+        if ($shouldInstallOptionals) {
+            $script:InstallOptionalComponents = $true
+            Update-SetupResumeConfiguration
+            Add-SetupNote -Note ('Optionale Komponenten fuer diesen Lauf aktiviert: ' + ($supportedNames -join ', '))
+            return $true
+        }
+
+        Add-SetupNote -Note ('Optionale Komponenten wurden angeboten, aber nicht automatisch installiert: ' + ($supportedNames -join ', '))
+        return $false
+    }
+
+    function Copy-DirectoryTree {
+        param(
+            [string]$SourcePath,
+            [string]$DestinationPath,
+            [psobject]$LogContext,
+            [string]$Label
+        )
+
+        if (-not (Test-Path -Path $SourcePath)) {
+            Write-ComponentLogEntry -Context $LogContext -Level 'WARN' -Message "Quelle uebersprungen (nicht gefunden): $SourcePath"
+            return
+        }
+
+        New-DirectoryIfMissing -Path $DestinationPath
+        $sourceItems = Get-ChildItem -Path $SourcePath -Force -ErrorAction SilentlyContinue
+        if (-not $sourceItems) {
+            Write-ComponentLogEntry -Context $LogContext -Level 'INFO' -Message "$Label ist leer. Zielordner wurde dennoch vorbereitet: $DestinationPath"
+            return
+        }
+
+        Copy-Item -Path (Join-Path $SourcePath '*') -Destination $DestinationPath -Recurse -Force
+        Write-ComponentLogEntry -Context $LogContext -Level 'OK' -Message "$Label kopiert: $SourcePath -> $DestinationPath"
+    }
+
+    function Copy-ProjectDataDirectories {
+        $logContext = New-ComponentLogContext -Component 'Project Data Copy' -Action 'copy-runtime-directories'
+        try {
+            Write-Section -Message 'Kopiere Projektdaten in definierte Betriebsordner'
+            New-DirectoryIfMissing -Path $ProjectDataRoot
+
+            $copyMap = @(
+                @{ Source = (Join-Path $projectRoot 'config'); Destination = (Join-Path $ProjectDataRoot 'config'); Label = 'config' },
+                @{ Source = (Join-Path $projectRoot 'data'); Destination = (Join-Path $ProjectDataRoot 'data'); Label = 'data' },
+                @{ Source = (Join-Path $projectRoot 'DOC'); Destination = (Join-Path $ProjectDataRoot 'DOC'); Label = 'DOC' },
+                @{ Source = (Join-Path $projectRoot 'modules'); Destination = (Join-Path $ProjectDataRoot 'modules'); Label = 'modules' }
+            )
+
+            foreach ($item in $copyMap) {
+                Copy-DirectoryTree -SourcePath $item.Source -DestinationPath $item.Destination -LogContext $logContext -Label $item.Label
+            }
+
+            Add-SetupCompletedAction -Action 'copy:project-data'
+            Add-SetupNote -Note ('Projektdaten wurden nach ' + $ProjectDataRoot + ' kopiert.')
+            Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode 0
+        }
+        catch {
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
+            throw
+        }
+    }
+
+    function Write-IisReverseProxyWebConfig {
+        param([string]$TargetPath)
+
+        $webConfigContent = @"
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <rewrite>
+      <rules>
+        <rule name="easyONBOARDING-V2-ReverseProxy" stopProcessing="true">
+          <match url="(.*)" />
+          <action type="Rewrite" url="http://127.0.0.1:$PythonBackendPort/{R:1}" appendQueryString="true" logRewrittenUrl="true" />
+        </rule>
+      </rules>
+    </rewrite>
+    <security>
+      <authentication>
+        <anonymousAuthentication enabled="false" />
+        <windowsAuthentication enabled="true" />
+      </authentication>
+    </security>
+    <httpProtocol>
+      <customHeaders>
+        <add name="X-Forwarded-Proto" value="http" />
+      </customHeaders>
+    </httpProtocol>
+  </system.webServer>
+</configuration>
+"@
+
+        Set-Content -Path $TargetPath -Value $webConfigContent -Encoding UTF8
+    }
+
+    function Import-WebAdministrationModule {
+        if (Get-Module -Name 'WebAdministration') {
+            return $true
+        }
+
+        if (Get-Module -ListAvailable -Name 'WebAdministration') {
+            Import-Module -Name 'WebAdministration' -ErrorAction Stop
+            return $true
+        }
+
+        $installWindowsFeatureCommand = Get-WindowsFeatureInstallCommandName
+        if (-not [string]::IsNullOrWhiteSpace($installWindowsFeatureCommand) -and $InstallMissingRequiredComponents -and (Test-IsAdministrator)) {
+            $installCommand = Get-Command -Name $installWindowsFeatureCommand -ErrorAction Stop
+            $featureArguments = @{
+                Name        = 'Web-Scripting-Tools'
+                ErrorAction = 'Stop'
+            }
+            if ($installWindowsFeatureCommand -eq 'Install-WindowsFeature') {
+                $featureArguments.IncludeManagementTools = $true
+            }
+
+            & $installCommand @featureArguments | Out-Null
+            if (Get-Module -ListAvailable -Name 'WebAdministration') {
+                Import-Module -Name 'WebAdministration' -ErrorAction Stop
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    function Configure-IisHosting {
+        $logContext = New-ComponentLogContext -Component 'IIS Configuration' -Action 'configure-site-and-proxy'
+        $appCmdPath = Join-Path $env:SystemRoot 'System32\inetsrv\appcmd.exe'
+
+        try {
+            if (-not (Test-IsAdministrator)) {
+                throw 'Fuer die IIS-Konfiguration werden Administratorrechte benoetigt.'
+            }
+
+            if (-not (Import-WebAdministrationModule)) {
+                throw 'Das Modul WebAdministration ist nicht verfuegbar. Bitte IIS Management Scripts and Tools installieren.'
+            }
+
+            Write-Section -Message 'Konfiguriere optionales IIS-Betriebsprofil'
+            New-DirectoryIfMissing -Path $DeploymentRoot
+            New-DirectoryIfMissing -Path $IisPhysicalPath
+
+            if (-not (Test-Path -Path "IIS:\AppPools\$IisAppPoolName")) {
+                New-Item -Path "IIS:\AppPools\$IisAppPoolName" | Out-Null
+            }
+
+            Set-ItemProperty -Path "IIS:\AppPools\$IisAppPoolName" -Name managedRuntimeVersion -Value ''
+            Set-ItemProperty -Path "IIS:\AppPools\$IisAppPoolName" -Name managedPipelineMode -Value 'Integrated'
+            Set-ItemProperty -Path "IIS:\AppPools\$IisAppPoolName" -Name autoStart -Value $true
+
+            $site = Get-Website -Name $IisSiteName -ErrorAction SilentlyContinue
+            if ($site) {
+                Set-ItemProperty -Path "IIS:\Sites\$IisSiteName" -Name physicalPath -Value $IisPhysicalPath
+                Set-ItemProperty -Path "IIS:\Sites\$IisSiteName" -Name applicationPool -Value $IisAppPoolName
+            }
+            else {
+                $newWebsiteParameters = @{
+                    Name            = $IisSiteName
+                    Port            = $IisPort
+                    PhysicalPath    = $IisPhysicalPath
+                    ApplicationPool = $IisAppPoolName
+                    Force           = $true
+                }
+                if (-not [string]::IsNullOrWhiteSpace($IisHostHeader)) {
+                    $newWebsiteParameters.HostHeader = $IisHostHeader
+                }
+
+                New-Website @newWebsiteParameters | Out-Null
+            }
+
+            $expectedBindingInformation = '*:{0}:{1}' -f $IisPort, $IisHostHeader
+            $binding = Get-WebBinding -Name $IisSiteName -Protocol 'http' -ErrorAction SilentlyContinue | Where-Object { $_.bindingInformation -eq $expectedBindingInformation } | Select-Object -First 1
+            if (-not $binding) {
+                New-WebBinding -Name $IisSiteName -Protocol 'http' -Port $IisPort -IPAddress '*' -HostHeader $IisHostHeader | Out-Null
+            }
+
+            $webConfigPath = Join-Path $IisPhysicalPath 'web.config'
+            Write-IisReverseProxyWebConfig -TargetPath $webConfigPath
+            Write-ComponentLogEntry -Context $logContext -Level 'OK' -Message "web.config geschrieben: $webConfigPath"
+
+            Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $IisSiteName -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name enabled -Value $false
+            Set-WebConfigurationProperty -PSPath 'IIS:\' -Location $IisSiteName -Filter 'system.webServer/security/authentication/windowsAuthentication' -Name enabled -Value $true
+
+            if (Test-Path -Path $appCmdPath) {
+                $proxyArgs = @('set', 'config', '-section:system.webServer/proxy', '/enabled:"True"', '/preserveHostHeader:"True"', '/reverseRewriteHostInResponseHeaders:"False"', '/commit:apphost')
+                $null = & $appCmdPath @proxyArgs 2>&1
+                Write-ComponentLogEntry -Context $logContext -Level 'INFO' -Message 'ARR-Proxy-Option auf Serverebene wurde verarbeitet (sofern verfuegbar).'
+            }
+
+            Start-Website -Name $IisSiteName | Out-Null
+            Add-SetupCompletedAction -Action 'iis:configured'
+            Add-SetupNote -Note ('IIS-Site konfiguriert: ' + $IisSiteName + ' -> http://127.0.0.1:' + $PythonBackendPort)
+            Complete-ComponentLog -Context $logContext -Outcome 'success' -ExitCode 0 -AdditionalFiles @($webConfigPath)
+        }
+        catch {
+            Write-ComponentLogEntry -Context $logContext -Level 'ERROR' -Message $_.Exception.Message
+            Complete-ComponentLog -Context $logContext -Outcome 'error' -ExitCode 1 -Notes @($_.Exception.Message)
+            throw
+        }
     }
 
     function Install-PythonDependencies {
@@ -1205,6 +2294,7 @@ try {
         Start-SetupSession
         Set-SetupPhase -Phase 'prepare-offline-cache'
         Write-Section -Message 'Bereite Offline-Cache fuer produktive Server vor'
+        Save-InstallerManifest -Manifest (Get-InstallerManifestObject)
 
         try {
             $pythonCacheContext = New-ComponentLogContext -Component 'Python 3.13.x' -Action 'prepare-offline-cache'
@@ -1219,7 +2309,7 @@ try {
 
         try {
             $rewriteCacheContext = New-ComponentLogContext -Component 'IIS URL Rewrite' -Action 'prepare-offline-cache'
-            $rewriteInstaller = Get-InstallerSource -ComponentName 'IIS URL Rewrite' -CacheSubPath 'iis\url-rewrite' -PreferredFileName 'rewrite_amd64_en-US.msi' -SearchPatterns @('rewrite*.msi', '*url*rewrite*.msi') -ExplicitPath $UrlRewriteInstallerPath -Urls @($UrlRewriteInstallerUrl) -LogContext $rewriteCacheContext
+            $rewriteInstaller = Get-InstallerSource -ComponentName 'IIS URL Rewrite' -CacheSubPath 'iis\url-rewrite' -PreferredFileName 'rewrite_amd64_en-US.msi' -SearchPatterns @('rewrite*.msi', '*url*rewrite*.msi') -ExplicitPath $UrlRewriteInstallerPath -Urls (Get-UrlRewriteInstallerUrls) -LogContext $rewriteCacheContext
             Write-ComponentLogEntry -Context $rewriteCacheContext -Level 'OK' -Message "Offline-Cache bereit: $($rewriteInstaller.Path)"
             Complete-ComponentLog -Context $rewriteCacheContext -Outcome 'success' -ExitCode 0
             Add-SetupCompletedAction -Action 'cache:iis-url-rewrite'
@@ -1230,7 +2320,7 @@ try {
 
         try {
             $arrCacheContext = New-ComponentLogContext -Component 'IIS Application Request Routing (ARR)' -Action 'prepare-offline-cache'
-            $arrInstaller = Get-InstallerSource -ComponentName 'IIS Application Request Routing (ARR)' -CacheSubPath 'iis\arr' -PreferredFileName 'arr-x64.msi' -SearchPatterns @('*application*request*routing*.msi', '*arr*.msi') -ExplicitPath $ArrInstallerPath -Urls @($ArrInstallerUrl) -LogContext $arrCacheContext
+            $arrInstaller = Get-InstallerSource -ComponentName 'IIS Application Request Routing (ARR)' -CacheSubPath 'iis\arr' -PreferredFileName 'arr-x64.msi' -SearchPatterns @('*application*request*routing*.msi', '*arr*.msi') -ExplicitPath $ArrInstallerPath -Urls (Get-ArrInstallerUrls) -LogContext $arrCacheContext
             Write-ComponentLogEntry -Context $arrCacheContext -Level 'OK' -Message "Offline-Cache bereit: $($arrInstaller.Path)"
             Complete-ComponentLog -Context $arrCacheContext -Outcome 'success' -ExitCode 0
             Add-SetupCompletedAction -Action 'cache:iis-arr'
@@ -1241,8 +2331,11 @@ try {
         }
 
         Write-Detail -Level 'OK' -Message "Offline-Cache vorbereitet unter: $OfflineCacheRoot"
+        Write-Detail -Level 'OK' -Message "Installer-Manifest liegt unter: $InstallerManifestPath"
         Set-SetupPhase -Phase 'prepare-offline-cache-complete'
         Clear-SetupRebootPending
+        Write-SetupRunSummary -FinalStatus 'prepared-cache' -Message 'Offline-Cache wurde vorbereitet.'
+        Unregister-ResumeScheduledTaskIfPresent
         Clear-SetupStateFile
     }
 
@@ -1297,7 +2390,13 @@ try {
             Stop-ForPendingReboot -Phase 'post-feature-install' -Reasons $reasons
             return
         }
+    }
 
+    Resolve-OptionalComponentSelection -Statuses $setupStatus.Statuses | Out-Null
+
+    $pythonRuntimeForDependencies = $setupStatus.PythonRuntime
+
+    if ($InstallMissingRequiredComponents -or $InstallOptionalComponents) {
         Set-SetupPhase -Phase 'install-external-prerequisites'
         $externalInstallResult = Install-ExternalPrerequisitesIfNeeded -Statuses $setupStatus.Statuses
         $pendingAfterExternal = Get-PendingRebootState
@@ -1307,19 +2406,53 @@ try {
             return
         }
 
+        if ($null -ne $externalInstallResult.PythonRuntime) {
+            $pythonRuntimeForDependencies = $externalInstallResult.PythonRuntime
+        }
+
         Write-Section -Message 'Pruefe Status nach Installationsversuchen erneut'
         $setupStatus = Get-SetupStatus
+        if ($null -eq $setupStatus.PythonRuntime -and $null -ne $pythonRuntimeForDependencies) {
+            $setupStatus = Set-DetectedPythonRuntime -SetupStatus $setupStatus -PythonRuntime $pythonRuntimeForDependencies
+        }
         Show-StatusTable -Statuses $setupStatus.Statuses
         Show-RequiredStatusSummary -Statuses $setupStatus.Statuses
     }
+    elseif ($null -eq $pythonRuntimeForDependencies) {
+        $pythonRuntimeForDependencies = $setupStatus.PythonRuntime
+    }
 
     Set-SetupPhase -Phase 'install-python-dependencies'
-    Install-PythonDependencies -PythonRuntime $setupStatus.PythonRuntime -WithDevDependencySet $WithDevDependencies.IsPresent -AllowUnsupportedVersion $AllowUnsupportedPythonVersion.IsPresent
+    if ($null -eq $pythonRuntimeForDependencies) {
+        $pythonRuntimeForDependencies = $setupStatus.PythonRuntime
+    }
+
+    Install-PythonDependencies -PythonRuntime $pythonRuntimeForDependencies -WithDevDependencySet $WithDevDependencies.IsPresent -AllowUnsupportedVersion $AllowUnsupportedPythonVersion.IsPresent
+
+    if ($CopyProjectData) {
+        Set-SetupPhase -Phase 'copy-project-data'
+        Copy-ProjectDataDirectories
+    }
+
+    if ($ConfigureIis) {
+        Set-SetupPhase -Phase 'configure-iis'
+        Configure-IisHosting
+    }
 
     Set-SetupPhase -Phase 'completed'
     Clear-SetupRebootPending
+    Write-SetupRunSummary -FinalStatus 'success' -Message 'Setup wurde erfolgreich abgeschlossen.'
+    Unregister-ResumeScheduledTaskIfPresent
     Clear-SetupStateFile
     Write-Detail -Level 'OK' -Message "Setup abgeschlossen. Komponenten-Logs liegen unter: $script:CurrentLogSessionDir"
+}
+catch {
+    if ($null -ne $script:SetupState) {
+        Add-SetupNote -Note ('Fehler: ' + $_.Exception.Message)
+        Write-SetupRunSummary -FinalStatus 'failed' -Message $_.Exception.Message
+    }
+
+    throw
 }
 finally {
     Pop-Location

@@ -1,0 +1,16 @@
+﻿{
+    "Component":  "IIS Application Request Routing (ARR)",
+    "Action":  "install-msi",
+    "Outcome":  "success",
+    "ExitCode":  0,
+    "StartedUtc":  "2026-05-03T17:42:15.5094343Z",
+    "FinishedUtc":  "2026-05-03T17:42:19.5843934Z",
+    "LogPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\IIS-Application-Request-Routing-(ARR)\\20260503-194215-install-msi.log",
+    "MetadataPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\IIS-Application-Request-Routing-(ARR)\\20260503-194215-install-msi.json",
+    "AdditionalFiles":  [
+                            "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\IIS-Application-Request-Routing-(ARR)\\20260503-194215-install-msi.msi.log"
+                        ],
+    "Notes":  [
+
+              ]
+}

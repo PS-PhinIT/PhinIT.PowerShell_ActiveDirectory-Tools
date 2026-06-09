@@ -1,0 +1,16 @@
+﻿{
+    "Component":  "Setup Auto Resume",
+    "Action":  "register-scheduled-task",
+    "Outcome":  "error",
+    "ExitCode":  1,
+    "StartedUtc":  "2026-05-03T17:20:05.7661115Z",
+    "FinishedUtc":  "2026-05-03T17:20:05.9383651Z",
+    "LogPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\Setup-Auto-Resume\\20260503-192005-register-scheduled-task.log",
+    "MetadataPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\Setup-Auto-Resume\\20260503-192005-register-scheduled-task.json",
+    "AdditionalFiles":  [
+
+                        ],
+    "Notes":  [
+                  "The property \u0027Path\u0027 cannot be found on this object. Verify that the property exists."
+              ]
+}

@@ -1,0 +1,16 @@
+﻿{
+    "Component":  "Python 3.13.x",
+    "Action":  "install-exe",
+    "Outcome":  "success",
+    "ExitCode":  0,
+    "StartedUtc":  "2026-05-03T17:42:08.2265860Z",
+    "FinishedUtc":  "2026-05-03T17:42:13.0744954Z",
+    "LogPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\Python-3.13.x\\20260503-194208-install-exe.log",
+    "MetadataPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\Python-3.13.x\\20260503-194208-install-exe.json",
+    "AdditionalFiles":  [
+
+                        ],
+    "Notes":  [
+
+              ]
+}

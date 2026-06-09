@@ -1,0 +1,7 @@
+﻿[2026-05-03T17:24:24.6629719Z][INFO] Start Python 3.13.x :: install-exe
+[2026-05-03T17:24:24.6966713Z][INFO] Download gestartet: https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.exe
+[2026-05-03T17:24:43.9360820Z][OK] Download erfolgreich: https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.exe -> Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\setup-cache\python\python-3.13-amd64.exe
+[2026-05-03T17:24:44.5448848Z][OK] Manifest aktualisiert: python\python-3.13-amd64.exe (C1CB40978B28F696B111C36034A1BDEDA17D25E35C74A08EF5E5FF405A63FC20)
+[2026-05-03T17:24:44.5535062Z][INFO] Installerquelle: downloaded-and-cached
+[2026-05-03T17:24:44.5640638Z][INFO] Installerpfad: Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\setup-cache\python\python-3.13-amd64.exe
+[2026-05-03T17:25:28.7453568Z][OK] Installation erfolgreich.

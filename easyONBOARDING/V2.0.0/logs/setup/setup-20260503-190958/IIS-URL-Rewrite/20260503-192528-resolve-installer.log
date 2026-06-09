@@ -1,0 +1,3 @@
+﻿[2026-05-03T17:25:28.7910553Z][INFO] Start IIS URL Rewrite :: resolve-installer
+[2026-05-03T17:25:28.8084712Z][INFO] Download gestartet: https://download.microsoft.com/download/D/D/9/DD9A82C0-1D98-4C6E-A283-AB3A21A9EF57/rewrite_amd64_en-US.msi
+[2026-05-03T17:25:31.1989488Z][WARN] Download fehlgeschlagen: https://download.microsoft.com/download/D/D/9/DD9A82C0-1D98-4C6E-A283-AB3A21A9EF57/rewrite_amd64_en-US.msi (The remote server returned an error: (404) Not Found.)

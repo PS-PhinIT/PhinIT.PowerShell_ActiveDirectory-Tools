@@ -1,0 +1,16 @@
+﻿{
+    "Component":  "IIS Application Request Routing (ARR)",
+    "Action":  "resolve-installer",
+    "Outcome":  "success",
+    "ExitCode":  0,
+    "StartedUtc":  "2026-05-03T17:42:13.3806200Z",
+    "FinishedUtc":  "2026-05-03T17:42:15.4771294Z",
+    "LogPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\IIS-Application-Request-Routing-(ARR)\\20260503-194213-resolve-installer.log",
+    "MetadataPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\IIS-Application-Request-Routing-(ARR)\\20260503-194213-resolve-installer.json",
+    "AdditionalFiles":  [
+
+                        ],
+    "Notes":  [
+
+              ]
+}

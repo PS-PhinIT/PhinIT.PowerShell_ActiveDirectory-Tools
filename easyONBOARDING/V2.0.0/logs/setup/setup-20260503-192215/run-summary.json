@@ -1,0 +1,23 @@
+﻿{
+    "RunId":  "setup-20260503-192215",
+    "FinalStatus":  "prepared-cache",
+    "Message":  "Offline-Cache wurde vorbereitet.",
+    "LastPhase":  "prepare-offline-cache-complete",
+    "PendingReboot":  false,
+    "PendingRebootReasons":  [
+
+                             ],
+    "ResumeTaskName":  "easyONBOARDING-V2-Setup-Resume",
+    "ResumeTaskRegistered":  false,
+    "CompletedActions":  [
+
+                         ],
+    "Notes":  [
+
+              ],
+    "ComponentLogs":  [
+
+                      ],
+    "InstallerManifestPath":  "D:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\setup-cache\\installer-manifest.json",
+    "GeneratedUtc":  "2026-05-03T17:22:15.7974065Z"
+}

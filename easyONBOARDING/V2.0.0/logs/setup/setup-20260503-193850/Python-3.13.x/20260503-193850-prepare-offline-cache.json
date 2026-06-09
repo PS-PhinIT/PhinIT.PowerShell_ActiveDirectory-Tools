@@ -1,0 +1,16 @@
+﻿{
+    "Component":  "Python 3.13.x",
+    "Action":  "prepare-offline-cache",
+    "Outcome":  "success",
+    "ExitCode":  0,
+    "StartedUtc":  "2026-05-03T17:38:50.4618235Z",
+    "FinishedUtc":  "2026-05-03T17:38:50.5657949Z",
+    "LogPath":  "D:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-193850\\Python-3.13.x\\20260503-193850-prepare-offline-cache.log",
+    "MetadataPath":  "D:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-193850\\Python-3.13.x\\20260503-193850-prepare-offline-cache.json",
+    "AdditionalFiles":  [
+
+                        ],
+    "Notes":  [
+
+              ]
+}

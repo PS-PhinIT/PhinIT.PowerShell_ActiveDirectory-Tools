@@ -1,0 +1,16 @@
+﻿{
+    "Component":  "Setup Auto Resume",
+    "Action":  "register-scheduled-task",
+    "Outcome":  "success",
+    "ExitCode":  0,
+    "StartedUtc":  "2026-05-03T17:25:31.2941398Z",
+    "FinishedUtc":  "2026-05-03T17:25:32.0862164Z",
+    "LogPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\Setup-Auto-Resume\\20260503-192531-register-scheduled-task.log",
+    "MetadataPath":  "Z:\\00-GitWork\\PhinIT-Active-Directory-File-Tools\\easyONBOARDING\\V2.0.0\\logs\\setup\\setup-20260503-190958\\Setup-Auto-Resume\\20260503-192531-register-scheduled-task.json",
+    "AdditionalFiles":  [
+
+                        ],
+    "Notes":  [
+
+              ]
+}

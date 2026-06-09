@@ -1,0 +1,2 @@
+﻿[2026-05-03T17:20:05.7661115Z][INFO] Start Setup Auto Resume :: register-scheduled-task
+[2026-05-03T17:20:05.9225040Z][ERROR] The property 'Path' cannot be found on this object. Verify that the property exists.
