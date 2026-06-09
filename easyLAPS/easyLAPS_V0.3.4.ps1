@@ -498,14 +498,17 @@ function Get-LapsPasswordEx {
         ErrorMessage = ""
         ComputerName = $ComputerName
         IsEncrypted = $false
+        Source = $null
+        DecryptionStatus = $null
     }
     
     try {
         # Versuche Windows LAPS mit AsPlainText (entschlüsselt automatisch wenn Berechtigung vorhanden)
+        # Ohne IncludeHistory, da hier nur der aktuelle Wert benötigt wird.
         if ([string]::IsNullOrWhiteSpace($Domain)) {
-            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -AsPlainText -IncludeHistory -ErrorAction Stop -WarningAction SilentlyContinue | Select-Object -First 1
+            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -AsPlainText -ErrorAction Stop -WarningAction SilentlyContinue
         } else {
-            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -Domain $Domain -AsPlainText -IncludeHistory -ErrorAction Stop -WarningAction SilentlyContinue | Select-Object -First 1
+            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -Domain $Domain -AsPlainText -ErrorAction Stop -WarningAction SilentlyContinue
         }
         
         # Prüfe ob Passwort-Daten vorhanden sind
@@ -514,9 +517,24 @@ function Get-LapsPasswordEx {
             Write-Log "Keine LAPS Passwort-Daten für $ComputerName gefunden." -Level "Warning"
             return $result
         }
+
+        $source = if ($pwdInfo.PSObject.Properties['Source']) { [string]$pwdInfo.Source } else { "" }
+        $decryptionStatus = if ($pwdInfo.PSObject.Properties['DecryptionStatus']) { [string]$pwdInfo.DecryptionStatus } else { "" }
+        $result.Source = $source
+        $result.DecryptionStatus = $decryptionStatus
+
+        # Falls Entschlüsselung laut Ergebnis nicht erlaubt/fehlerhaft ist, sauber melden
+        if (($null -eq $pwdInfo.Password -or [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)) -and
+            -not [string]::IsNullOrWhiteSpace($decryptionStatus) -and
+            $decryptionStatus -notin @("Success", "NotApplicable")) {
+            $result.IsEncrypted = $true
+            $result.ErrorMessage = "Passwort kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)."
+            Write-Log "LAPS Passwort für $ComputerName kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)." -Level "Warning"
+            return $result
+        }
         
         # Validiere die Passwort-Daten
-        if ($null -eq $pwdInfo.Password) {
+        if ($null -eq $pwdInfo.Password -or [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)) {
             $result.ErrorMessage = "Passwort-Daten enthalten kein Passwort."
             Write-Log "LAPS Passwort-Daten für $ComputerName sind unvollständig (kein Passwort)." -Level "Warning"
             return $result
@@ -524,12 +542,30 @@ function Get-LapsPasswordEx {
         
         # Erfolgreicher Abruf
         $result.Success = $true
-        $result.Password = ConvertTo-SecureString $pwdInfo.Password -AsPlainText -Force
+        if ($pwdInfo.Password -is [System.Security.SecureString]) {
+            $result.Password = $pwdInfo.Password
+        }
+        else {
+            $result.Password = ConvertTo-SecureString ([string]$pwdInfo.Password) -AsPlainText -Force
+        }
         $result.ComputerName = if ($null -ne $pwdInfo.ComputerName) { $pwdInfo.ComputerName } else { $ComputerName }
         $result.UserName = if ($null -ne $pwdInfo.Account -and -not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $pwdInfo.Account } else { "Administrator" }
         $result.PasswordExpiresTimestamp = if ($pwdInfo.PSObject.Properties['ExpirationTimestamp']) { $pwdInfo.ExpirationTimestamp } else { $null }
-        $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime']) { $pwdInfo.PasswordUpdateTime } else { $null }
-        $result.LapsVersion = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime']) { "Windows LAPS" } else { "Legacy LAPS" }
+        $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime'] -and $pwdInfo.PasswordUpdateTime) { $pwdInfo.PasswordUpdateTime } else { $null }
+
+        if ($source -like "Legacy*") {
+            $result.LapsVersion = "Legacy LAPS (Windows Emulation)"
+            if ([string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) {
+                $result.UserName = "N/A (Legacy)"
+            }
+        }
+        elseif ($source -like "Encrypted*" -or $source -like "Cleartext*") {
+            $result.LapsVersion = "Windows LAPS"
+        }
+        else {
+            $result.LapsVersion = if ($result.PasswordLastSetTimestamp) { "Windows LAPS" } else { "Unbekannt/Legacy" }
+        }
+
         Write-Log "LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
     }
     catch {
@@ -598,54 +634,73 @@ function Reset-LapsPasswordEx {
         Success = $false
         LapsVersion = "Unknown"
         ErrorMessage = ""
+        NewExpirationTime = $null
     }
     
     try {
-        $hasWindowsLapsCmd = [bool](Get-Command -Name Get-LapsADPassword -ErrorAction SilentlyContinue)
+        $hasWindowsSetExpiryCmd = [bool](Get-Command -Name Set-LapsADPasswordExpirationTime -ErrorAction SilentlyContinue)
         $hasLegacyResetCmd = [bool](Get-Command -Name Reset-AdmPwdPassword -ErrorAction SilentlyContinue)
+        $effectiveTime = Get-Date
 
-        if (-not $hasWindowsLapsCmd) {
-            if ($hasLegacyResetCmd -and [string]::IsNullOrWhiteSpace($Domain)) {
-                Reset-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
+        # 1) Bevorzugter Weg laut MS Learn für AD-Objekte: ExpirationTimestamp setzen
+        if ($hasWindowsSetExpiryCmd) {
+            try {
+                if ([string]::IsNullOrWhiteSpace($Domain)) {
+                    $setResult = Set-LapsADPasswordExpirationTime -Identity $ComputerName -WhenEffective $effectiveTime -ErrorAction Stop -WarningAction SilentlyContinue
+                } else {
+                    $setResult = Set-LapsADPasswordExpirationTime -Identity $ComputerName -Domain $Domain -WhenEffective $effectiveTime -ErrorAction Stop -WarningAction SilentlyContinue
+                }
+
+                if ($setResult) {
+                    $firstResult = $setResult | Select-Object -First 1
+                    if ($firstResult.PSObject.Properties['Status'] -and $firstResult.Status -ne 'PasswordReset') {
+                        throw "Set-LapsADPasswordExpirationTime meldet unerwarteten Status: $($firstResult.Status)"
+                    }
+                }
+
                 $result.Success = $true
-                $result.LapsVersion = "Legacy LAPS (AdmPwd)"
+                $result.NewExpirationTime = $effectiveTime
+                $result.LapsVersion = "Windows LAPS"
                 return $result
             }
+            catch {
+                $windowsResetError = $_.Exception.Message
 
-            if (-not [string]::IsNullOrWhiteSpace($Domain)) {
-                throw "Windows LAPS Cmdlets sind nicht verfügbar. Legacy LAPS unterstützt keinen Domain-Parameter beim Reset."
-            }
+                # Für Domain-Reset keine Legacy-Fallbacks versuchen, da AdmPwd kein -Domain unterstützt.
+                if (-not [string]::IsNullOrWhiteSpace($Domain)) {
+                    throw "Windows LAPS AD-Reset fehlgeschlagen: $windowsResetError"
+                }
 
-            throw "Weder Windows LAPS noch Legacy Reset-AdmPwdPassword sind verfügbar."
-        }
+                # 2) Fallback auf Legacy LAPS (lokale Domain-Kontextausführung)
+                if ($hasLegacyResetCmd) {
+                    try {
+                        Reset-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
+                        $result.Success = $true
+                        $result.LapsVersion = "Legacy LAPS (AdmPwd)"
+                        return $result
+                    }
+                    catch {
+                        throw "Windows LAPS AD-Reset fehlgeschlagen: $windowsResetError | Legacy-Fallback fehlgeschlagen: $($_.Exception.Message)"
+                    }
+                }
 
-        # Prüfe welche LAPS Version aktiv ist
-        $pwdInfo = if ([string]::IsNullOrWhiteSpace($Domain)) {
-            Get-LapsADPassword -Identity $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
-        } else {
-            Get-LapsADPassword -Identity $ComputerName -Domain $Domain -ErrorAction Stop -WarningAction SilentlyContinue
-        }
-        
-        $isWinLaps = $null -ne $pwdInfo.PasswordUpdateTime
-        $result.LapsVersion = if ($isWinLaps) { "Windows LAPS" } else { "Legacy LAPS" }
-        
-        if ($isWinLaps) {
-            # Windows LAPS
-            if ([string]::IsNullOrWhiteSpace($Domain)) {
-                Reset-LapsPassword -Identity $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
-            } else {
-                Reset-LapsPassword -Identity $ComputerName -Domain $Domain -ErrorAction Stop -WarningAction SilentlyContinue
-            }
-        } else {
-            # Legacy LAPS - nur ohne custom domain unterstützt
-            if ([string]::IsNullOrWhiteSpace($Domain)) {
-                Reset-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
-            } else {
-                throw "Legacy LAPS unterstützt keine custom Domain beim Reset."
+                throw "Windows LAPS AD-Reset fehlgeschlagen: $windowsResetError"
             }
         }
-        
-        $result.Success = $true
+
+        # 3) Wenn Set-LapsADPasswordExpirationTime nicht verfügbar ist: Legacy direkt probieren
+        if ($hasLegacyResetCmd -and [string]::IsNullOrWhiteSpace($Domain)) {
+            Reset-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop -WarningAction SilentlyContinue
+            $result.Success = $true
+            $result.LapsVersion = "Legacy LAPS (AdmPwd)"
+            return $result
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($Domain)) {
+            throw "Set-LapsADPasswordExpirationTime ist nicht verfügbar und Legacy LAPS unterstützt keinen Domain-Parameter beim Reset."
+        }
+
+        throw "Weder Set-LapsADPasswordExpirationTime noch Reset-AdmPwdPassword sind verfügbar."
     }
     catch {
         $result.ErrorMessage = $_.Exception.Message
@@ -897,7 +952,11 @@ public class ProcessDPI {
             <Border Grid.Column="1" Style="{StaticResource Card}" Margin="5,0,0,0">
                 <DockPanel>
                     <TextBlock Text="LAPS Client Status and Policies" DockPanel.Dock="Top" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10" Foreground="#1C1C1C"/>
-                    <Button Name="btnCheckLapsStatus" Content="Check Status" Width="130" Height="30" DockPanel.Dock="Top" HorizontalAlignment="Left" Margin="75,0,0,10" ToolTip="Checks the LAPS status (Ctrl+P)" Style="{StaticResource ModernButton}"/>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="75,0,0,10">
+                        <Button Name="btnCheckLapsStatus" Content="Check Status" Width="130" Height="30" HorizontalAlignment="Left" Margin="0,0,10,0" ToolTip="Checks the LAPS status (Ctrl+P)" Style="{StaticResource ModernButton}"/>
+                        <Button Name="btnRunPolicyProcessing" Content="Run Policy (local)" Width="150" Height="30" HorizontalAlignment="Left" Margin="0,0,10,0" ToolTip="Startet Invoke-LapsPolicyProcessing auf dem lokalen System (Ctrl+I)" Style="{StaticResource ModernButton}"/>
+                        <Button Name="btnRunDiagnostics" Content="Diagnose" Width="130" Height="30" HorizontalAlignment="Left" ToolTip="Sammelt LAPS-Diagnosedaten und öffnet die ZIP-Datei" Style="{StaticResource ModernButton}"/>
+                    </StackPanel>
 
                     <Grid DockPanel.Dock="Top">
                         <Grid.RowDefinitions>
@@ -959,7 +1018,7 @@ public class ProcessDPI {
     # GUI-Elemente (Variablen für einfacheren Zugriff)
     $controls = @{}
     @("txtComputerName", "btnRefreshAdList", "lstAdComputers", "txtFilter", "txtLapsUser", "txtLapsPasswordDisplay", "txtPasswordExpiry",
-      "txtPasswordLastSet", "txtLapsVersion", "btnGetLapsPassword", "btnResetLapsPassword", "btnCopyPassword", "btnCheckLapsStatus", 
+            "txtPasswordLastSet", "txtLapsVersion", "btnGetLapsPassword", "btnResetLapsPassword", "btnCopyPassword", "btnCheckLapsStatus", "btnRunPolicyProcessing", "btnRunDiagnostics",
       "btnExportSelected", "btnExportAll", "btnRotateAll",
       "ellipseLapsInstalled", "lblLapsInstalledStatus", "ellipseGpoStatus", "lblGpoStatus", "txtPolicyDetails", 
       "txtStatus", "imgLogo", "lblFooter", "lblVersion", "lblModuleStatus") | ForEach-Object {
@@ -977,6 +1036,11 @@ public class ProcessDPI {
             $controls.btnCheckLapsStatus.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
             $e.Handled = $true
         }        
+        # Strg+I für lokale Policy-Verarbeitung
+        if ($e.Key -eq 'I' -and $e.KeyboardDevice.Modifiers -eq 'Control') {
+            $controls.btnRunPolicyProcessing.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+            $e.Handled = $true
+        }
         # Strg+F für Fokus auf Filter
         if ($e.Key -eq 'F' -and $e.KeyboardDevice.Modifiers -eq 'Control' -and $controls.txtFilter) {
             $controls.txtFilter.Focus()
@@ -1419,11 +1483,86 @@ $global:UpdateStatus = {
         }
     })
 
-    # LAPS Status Check Handler
-    $controls.btnCheckLapsStatus.Add_Click({
-        & $global:UpdateStatus -IsLapsCheck "Pruefe LAPS-Status des lokalen Systems..." "Pruefung"
+    # Lokale LAPS-Policy-Verarbeitung anstoßen
+    $controls.btnRunPolicyProcessing.Add_Click({
+        & $global:UpdateStatus -IsLapsCheck "Starte lokale LAPS-Policy-Verarbeitung..." "Pruefung"
+
+        try {
+            if (-not (Get-Command -Name Invoke-LapsPolicyProcessing -ErrorAction SilentlyContinue)) {
+                $msg = "Invoke-LapsPolicyProcessing ist nicht verfügbar. Bitte Windows LAPS PowerShell-Modul prüfen."
+                & $global:UpdateStatus -IsLapsCheck $msg "Warning"
+                [System.Windows.MessageBox]::Show($msg, "Policy-Trigger nicht verfügbar", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+                return
+            }
+
+            Invoke-LapsPolicyProcessing -ErrorAction Stop
+            & $global:UpdateStatus -IsLapsCheck "Lokale LAPS-Policy-Verarbeitung wurde gestartet. Ergebnis über Eventlog prüfen (10003/10004/10005)." "OK"
+            [System.Windows.MessageBox]::Show(
+                "Die lokale LAPS-Policy-Verarbeitung wurde gestartet.`n`nHinweis: Dieser Vorgang wirkt nur auf das lokale System.`nPrüfen Sie den Eventlog-Kanal 'Microsoft-Windows-LAPS/Operational' (z. B. 10003, 10004, 10005).",
+                "Policy-Verarbeitung gestartet",
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Information
+            )
+        }
+        catch {
+            & $global:UpdateStatus -IsLapsCheck "Fehler beim Starten der lokalen LAPS-Policy-Verarbeitung: $($_.Exception.Message)" "Error"
+            [System.Windows.MessageBox]::Show("Fehler beim Starten der lokalen LAPS-Policy-Verarbeitung:`n$($_.Exception.Message)", "Policy-Trigger Fehler", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        }
     })
-    
+
+    # LAPS Diagnose ausführen und ZIP öffnen
+    $controls.btnRunDiagnostics.Add_Click({
+        & $global:UpdateStatus -IsLapsCheck "Starte LAPS-Diagnose..." "Pruefung"
+
+        try {
+            if (-not (Get-Command -Name Get-LapsDiagnostics -ErrorAction SilentlyContinue)) {
+                $msg = "Get-LapsDiagnostics ist nicht verfügbar. Bitte Windows LAPS PowerShell-Modul prüfen."
+                & $global:UpdateStatus -IsLapsCheck $msg "Warning"
+                [System.Windows.MessageBox]::Show($msg, "Diagnose nicht verfügbar", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+                return
+            }
+
+            $diagFolder = Join-Path -Path $script:logPath -ChildPath "Diagnostics"
+            if (-not (Test-Path -Path $diagFolder)) {
+                New-Item -Path $diagFolder -ItemType Directory -Force | Out-Null
+            }
+
+            $diagOutput = (Get-LapsDiagnostics -OutputFolder $diagFolder -ErrorAction Stop 2>&1 | Out-String)
+            $zipPath = $null
+
+            $zipRegexMatch = [regex]::Match($diagOutput, '([A-Za-z]:\\[^\r\n]+?\.zip)')
+            if ($zipRegexMatch.Success) {
+                $zipPath = $zipRegexMatch.Groups[1].Value.Trim()
+            }
+
+            if (-not $zipPath) {
+                $latestZip = Get-ChildItem -Path $diagFolder -Filter "*.zip" -File -ErrorAction SilentlyContinue |
+                             Sort-Object LastWriteTime -Descending |
+                             Select-Object -First 1
+                if ($latestZip) {
+                    $zipPath = $latestZip.FullName
+                }
+            }
+
+            if ($zipPath -and (Test-Path -Path $zipPath)) {
+                Start-Process -FilePath $zipPath
+                & $global:UpdateStatus -IsLapsCheck "Diagnose abgeschlossen. ZIP geöffnet: $zipPath" "OK"
+                [System.Windows.MessageBox]::Show("Diagnose erfolgreich abgeschlossen.`n`nZIP: $zipPath", "Diagnose abgeschlossen", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+            }
+            else {
+                & $global:UpdateStatus -IsLapsCheck "Diagnose ausgeführt, aber keine ZIP-Datei gefunden. Öffne Diagnosenordner..." "Warning"
+                if (Test-Path -Path $diagFolder) {
+                    Start-Process -FilePath $diagFolder
+                }
+                [System.Windows.MessageBox]::Show("Diagnose wurde ausgeführt, aber die ZIP-Datei konnte nicht automatisch ermittelt werden.`n`nOrdner: $diagFolder", "Diagnosehinweis", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            }
+        }
+        catch {
+            & $global:UpdateStatus -IsLapsCheck "Diagnose-Fehler: $($_.Exception.Message)" "Error"
+            [System.Windows.MessageBox]::Show("Fehler bei der LAPS-Diagnose:`n$($_.Exception.Message)", "Diagnosefehler", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        }
+    })
+
     # Initiale Prüfung beim Programmstart ausführen
     & $global:UpdateStatus -IsLapsCheck "Pruefe LAPS-Status des lokalen Systems..." "Pruefung"
     try {
