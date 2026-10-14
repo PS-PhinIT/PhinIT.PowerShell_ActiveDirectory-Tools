@@ -1,2 +1,3 @@
-/\# Versions/Logs
-/Logs
+Logs/
+*.log
+*.csv

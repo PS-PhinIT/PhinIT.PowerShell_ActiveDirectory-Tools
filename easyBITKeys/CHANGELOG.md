@@ -1,6 +1,42 @@
 # Changelog
 
 Alle relevanten Änderungen an `easyBITKEYS` werden hier dokumentiert.
+Die Versionsnummer wird ausschließlich im Skript (`$ScriptVersion`), in `README.md` und in dieser Datei gepflegt – nicht im Dateinamen.
+
+## [0.6.0] - 2026-10-14
+
+### Security
+- Neustart unter Windows PowerShell 5.1 erfolgt nicht mehr mit `-Verb RunAs` (keine unnötige Rechteerhöhung/UAC; AD-Lesezugriff benötigt keine lokalen Adminrechte).
+- Neustart nur noch aus PowerShell 7 (Core) heraus; im EXE-Modus ohne `$PSCommandPath` kein fehlerhafter Neustart mehr. `#Requires -Version 5.1` ergänzt.
+- XAML-Platzhalter werden nicht mehr per `ExpandString` (dynamische Code-Auswertung) ersetzt, sondern gezielt und XML-maskiert.
+- Zwischenablage wird nach dem Kopieren eines Wiederherstellungsschlüssels nach 30 Sekunden sowie beim Schließen automatisch geleert (nur wenn sie noch den kopierten Key enthält).
+- Hinweis auf Klartext-Schlüssel nach CSV-Export.
+- Sucheingaben werden als Literal behandelt (Wildcard-Zeichen wie `[` `*` werden maskiert).
+
+### Fixed
+- Selbstdiagnose (`Test-Requirements`) läuft jetzt **vor** dem Import des AD-Moduls (vorher erst nach dem Import – Client-Mode-Entscheidung kam zu spät).
+- Datumsspalte sortiert chronologisch (`SortMemberPath` auf DateTime-Feld `DatumSort`) statt alphabetisch nach `dd.MM.yyyy`.
+- Eigener Sortier-Handler entfernt, der parallel zur eingebauten DataGrid-Sortierung lief und die Absteigend-Sortierung verhinderte.
+- Legende und Filter widersprachen sich (`> 6 months` vs. `7-12 months`); Legende vereinheitlicht und um Eintrag „No key available“ (grau) ergänzt.
+- Computername wird robust aus dem DN ermittelt (Split nur an unmaskierten Kommas).
+- Fehlendes `whenCreated` führt nicht mehr zum Abbruch der gesamten Abfrage (Eintrag wird grau markiert).
+- „Refresh“ meldet keinen Erfolg mehr, wenn die AD-Abfrage fehlgeschlagen ist.
+- Skriptdatei als UTF-8 **mit BOM** gespeichert, damit Umlaute unter Windows PowerShell 5.1 korrekt dargestellt werden.
+
+### Changed
+- Skriptdatei ohne Versionsnummer: `easyBITKEYS_V0.5.1.ps1` → `easyBITKEYS.ps1`.
+- Fenster ist jetzt in der Größe veränderbar (`ResizeMode="CanResize"`).
+- Filter nutzt das gespeicherte DateTime-Feld statt mehrfacher String-Parsing-Versuche.
+
+### Performance
+- CSV-Export ohne Array-Verkettung (`+=`, O(n²)) – direkte Pipeline mit `Select-Object`.
+- Doppelte `Add-Type`-Aufrufe und ungenutzte Variablen (`$LogFile`, `$LogFileName`) entfernt.
+
+### Removed
+- Alte Versionen (`# OLD`: 0.3.5, 0.4.2, ZIP-Archiv, Assets) und alle Screenshots aus dem Repository entfernt.
+
+### Documentation
+- `README.md` aktualisiert (Dateiname, Voraussetzungen ohne Adminrechte, Sortierung, Zwischenablage, Logging, Sicherheitshinweise).
 
 ## [0.5.3] - 2026-06-09
 
@@ -36,5 +72,27 @@ Alle relevanten Änderungen an `easyBITKEYS` werden hier dokumentiert.
 
 ## [0.4.2] - 2025-05-23
 
+### Changed
+- GUI von Windows Forms (`DataGridView`) auf WPF (XAML) umgestellt (Header, Navigation, Footer).
+- INI-Datei-Verwaltung entfernt; Konfiguration direkt am Anfang des Skripts.
+- Farbschwellen auf < 7 Monate / 7–12 Monate / ≥ 12 Monate angepasst.
+
+### Added
+- Suche (Computername, BitLocker-Key, alle Felder) und Altersfilter.
+- Spaltensortierung, Key in Zwischenablage kopieren, Info-Dialog.
+- Logging (`Logs\easyBITKEYS_<Datum>.log`), Debug-Modus und Selbstdiagnose (`Test-Requirements`).
+- Client Mode mit Beispieldaten ohne AD-Modul.
+
 ### Notes
-- Vorherige dokumentierte Version (Baseline vor den Stabilitätsfixes in 0.5.2).
+- Baseline vor den Stabilitätsfixes in 0.5.2. Rekonstruiert aus der Git-Historie (Commit `6fd1d0f`).
+
+## [0.3.5] - 2025-03-02
+
+### Added
+- Älteste archivierte Version (`PhinIT-easyBITKEYS`, PowerShell 5.1).
+- Auslesen aller `msFVE-RecoveryInformation`-Objekte aus AD in einer farbcodierten Windows-Forms-GUI.
+- CSV-Export, Löschen des markierten Eintrags nach Bestätigung.
+- Farbschwellen < 3 / 6 / 12 Monate; Header-/Footer-Branding über INI-Datei.
+
+### Notes
+- Rekonstruiert aus dem Skript-Header der archivierten Version (Commit `6fd1d0f`).

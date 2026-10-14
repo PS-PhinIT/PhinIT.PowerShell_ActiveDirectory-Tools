@@ -1,0 +1,10 @@
+# Laufzeitdaten der Tools
+Logs/
+*.log
+*.csv
+Diagnostics/
+
+# Betriebssystem
+Thumbs.db
+desktop.ini
+.DS_Store
