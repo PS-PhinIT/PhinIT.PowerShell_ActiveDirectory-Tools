@@ -40,7 +40,7 @@ if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") {
 # Skriptinformationen
 $script:ScriptInfo = @{
     AppName = "easyLAPS"
-    ScriptVersion = "0.4.0"
+    ScriptVersion = "0.5.0"
     Author = "Andreas Hepp"
     ThemeColor = "#0078D7"
     LastUpdate = "2026-10-14"
@@ -563,6 +563,122 @@ function Invoke-LapsPasswordRotation {
     }
 }
 
+# Ermittelt (gecacht pro Domain), welche LAPS-Attribute im AD-Schema vorhanden sind.
+# Nicht vorhandene Attribute dürfen nicht bei Get-ADComputer -Properties angefragt werden.
+function Get-LapsSchemaAttribute {
+    param([string]$Domain = $null)
+
+    if ($null -eq $script:LapsSchemaCache) { $script:LapsSchemaCache = @{} }
+    $cacheKey = if ([string]::IsNullOrWhiteSpace($Domain)) { "." } else { $Domain.ToLowerInvariant() }
+    if ($script:LapsSchemaCache.ContainsKey($cacheKey)) { return $script:LapsSchemaCache[$cacheKey] }
+
+    $adParams = @{}
+    if (-not [string]::IsNullOrWhiteSpace($Domain)) { $adParams.Server = $Domain }
+
+    $wanted = @('msLAPS-Password', 'msLAPS-PasswordExpirationTime', 'msLAPS-EncryptedPassword', 'ms-Mcs-AdmPwd', 'ms-Mcs-AdmPwdExpirationTime')
+    $ldapFilter = '(|' + (($wanted | ForEach-Object { "(lDAPDisplayName=$_)" }) -join '') + ')'
+    $rootDse = Get-ADRootDSE @adParams -ErrorAction Stop
+    $found = @(Get-ADObject -SearchBase $rootDse.schemaNamingContext -LDAPFilter $ldapFilter -Properties lDAPDisplayName @adParams -ErrorAction Stop |
+               ForEach-Object { [string]$_.lDAPDisplayName })
+
+    Write-Log "LAPS-Schemaattribute ($cacheKey): $(if ($found.Count) { $found -join ', ' } else { 'keine' })" -Level "Info"
+    $script:LapsSchemaCache[$cacheKey] = $found
+    return $found
+}
+
+# Wandelt einen AD-FILETIME-Wert (Integer8) in lokale Zeit um
+function ConvertFrom-LapsFileTime {
+    param($Value)
+    try {
+        if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
+        $fileTime = [int64]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($fileTime -le 0) { return $null }
+        return [DateTime]::FromFileTimeUtc($fileTime).ToLocalTime()
+    }
+    catch {
+        return $null
+    }
+}
+
+# Fallback ohne LAPS-Module: liest die LAPS-Attribute direkt über das ActiveDirectory-Modul.
+# Unterstützt Windows LAPS (Klartext, msLAPS-Password) und Legacy LAPS (ms-Mcs-AdmPwd).
+# Verschlüsselte Windows-LAPS-Passwörter können nur mit Get-LapsADPassword entschlüsselt werden.
+function Get-LapsPasswordFromAdAttribute {
+    param(
+        [Parameter(Mandatory=$true)][string]$ComputerName,
+        [Parameter(Mandatory=$false)][string]$Domain = $null
+    )
+
+    $result = @{
+        Success = $false; Password = $null; UserName = $null
+        PasswordExpiresTimestamp = $null; PasswordLastSetTimestamp = $null
+        LapsVersion = "Unknown"; ErrorMessage = ""; ComputerName = $ComputerName
+        IsEncrypted = $false; Source = "AD-Attribut"; DecryptionStatus = $null
+    }
+
+    try {
+        $adParams = @{}
+        if (-not [string]::IsNullOrWhiteSpace($Domain)) { $adParams.Server = $Domain }
+
+        $attributes = @(Get-LapsSchemaAttribute -Domain $Domain)
+        if ($attributes.Count -eq 0) {
+            $result.ErrorMessage = "Das AD-Schema enthaelt keine LAPS-Attribute (weder Windows LAPS noch Legacy LAPS)."
+            return $result
+        }
+
+        # Get-ADComputer erwartet Name/sAMAccountName - FQDN auf den Hostnamen kürzen
+        $identity = ($ComputerName.Trim() -split '\.')[0]
+        $computer = Get-ADComputer -Identity $identity -Properties $attributes @adParams -ErrorAction Stop
+        $result.ComputerName = [string]$computer.Name
+
+        $windowsJson = if ($attributes -contains 'msLAPS-Password') { [string]$computer.'msLAPS-Password' } else { "" }
+        $windowsExpiry = if ($attributes -contains 'msLAPS-PasswordExpirationTime') { $computer.'msLAPS-PasswordExpirationTime' } else { $null }
+        $encrypted = if ($attributes -contains 'msLAPS-EncryptedPassword') { $computer.'msLAPS-EncryptedPassword' } else { $null }
+        $legacyPassword = if ($attributes -contains 'ms-Mcs-AdmPwd') { [string]$computer.'ms-Mcs-AdmPwd' } else { "" }
+        $legacyExpiry = if ($attributes -contains 'ms-Mcs-AdmPwdExpirationTime') { $computer.'ms-Mcs-AdmPwdExpirationTime' } else { $null }
+
+        if (-not [string]::IsNullOrWhiteSpace($windowsJson)) {
+            # Format laut Microsoft: {"n":"<Konto>","t":"<UTC-FILETIME hex>","p":"<Passwort>"}
+            $data = $windowsJson | ConvertFrom-Json
+            if ([string]::IsNullOrEmpty([string]$data.p)) { throw "msLAPS-Password enthaelt kein Passwort." }
+            $result.Password = ConvertTo-LapsSecureString ([string]$data.p)
+            $result.UserName = if ($data.n) { [string]$data.n } else { "Administrator" }
+            if ($data.t) {
+                try { $result.PasswordLastSetTimestamp = [DateTime]::FromFileTimeUtc([Convert]::ToInt64([string]$data.t, 16)).ToLocalTime() } catch { $result.PasswordLastSetTimestamp = $null }
+            }
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $windowsExpiry
+            $result.LapsVersion = "Windows LAPS (AD-Attribut, unverschluesselt)"
+            $result.Success = $true
+        }
+        elseif ($null -ne $encrypted -and @($encrypted).Count -gt 0) {
+            $result.IsEncrypted = $true
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $windowsExpiry
+            $result.LapsVersion = "Windows LAPS (verschluesselt)"
+            $result.ErrorMessage = "Das Passwort ist verschluesselt gespeichert (msLAPS-EncryptedPassword). Entschluesselung nur mit dem Windows-LAPS-Modul (Get-LapsADPassword) und Berechtigung ueber 'ADPasswordEncryptionPrincipal'."
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($legacyPassword)) {
+            $result.Password = ConvertTo-LapsSecureString $legacyPassword
+            $result.UserName = "N/A (Legacy LAPS)"
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $legacyExpiry
+            $result.LapsVersion = "Legacy LAPS (AD-Attribut)"
+            $result.Success = $true
+        }
+        elseif ($null -ne $windowsExpiry -or $null -ne $legacyExpiry) {
+            # Ablaufzeit lesbar, Passwort nicht -> vertrauliches Attribut ohne Leserecht
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $(if ($null -ne $windowsExpiry) { $windowsExpiry } else { $legacyExpiry })
+            $result.ErrorMessage = "LAPS ist fuer $($result.ComputerName) aktiv, das Passwort ist fuer Ihr Konto aber nicht lesbar (fehlende Leseberechtigung, siehe Set-LapsADReadPasswordPermission)."
+        }
+        else {
+            $result.ErrorMessage = "Fuer $($result.ComputerName) ist kein LAPS-Passwort im AD gespeichert (LAPS-Richtlinie nicht aktiv oder Geraet hat noch kein Passwort gemeldet)."
+        }
+    }
+    catch {
+        $result.ErrorMessage = "AD-Abfrage fehlgeschlagen: $($_.Exception.Message)"
+    }
+
+    return $result
+}
+
 function Get-LapsPasswordEx {
     param(
         [Parameter(Mandatory=$true)][string]$ComputerName,
@@ -582,125 +698,123 @@ function Get-LapsPasswordEx {
         Source = $null
         DecryptionStatus = $null
     }
-    
-    try {
-        # Versuche Windows LAPS mit AsPlainText (entschlüsselt automatisch wenn Berechtigung vorhanden)
-        # Ohne IncludeHistory, da hier nur der aktuelle Wert benötigt wird.
-        if ([string]::IsNullOrWhiteSpace($Domain)) {
-            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -AsPlainText -ErrorAction Stop -WarningAction SilentlyContinue
-        } else {
-            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -Domain $Domain -AsPlainText -ErrorAction Stop -WarningAction SilentlyContinue
-        }
-        
-        # Prüfe ob Passwort-Daten vorhanden sind
-        if ($null -eq $pwdInfo) {
-            $result.ErrorMessage = "Keine Passwort-Daten verfügbar."
-            Write-Log "Keine LAPS Passwort-Daten für $ComputerName gefunden." -Level "Warning"
-            return $result
-        }
+    $notes = New-Object System.Collections.Generic.List[string]
 
-        $source = if ($pwdInfo.PSObject.Properties['Source']) { [string]$pwdInfo.Source } else { "" }
-        $decryptionStatus = if ($pwdInfo.PSObject.Properties['DecryptionStatus']) { [string]$pwdInfo.DecryptionStatus } else { "" }
-        $result.Source = $source
-        $result.DecryptionStatus = $decryptionStatus
+    # 1) Windows LAPS (liest auch Legacy-LAPS-Attribute und entschlüsselt, sofern berechtigt)
+    if (Get-Command -Name Get-LapsADPassword -ErrorAction SilentlyContinue) {
+        try {
+            $lapsParams = @{ Identity = $ComputerName; AsPlainText = $true; ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            if (-not [string]::IsNullOrWhiteSpace($Domain)) { $lapsParams.Domain = $Domain }
+            # Ohne IncludeHistory, da hier nur der aktuelle Wert benötigt wird.
+            $pwdInfo = Get-LapsADPassword @lapsParams | Select-Object -First 1
 
-        # Falls Entschlüsselung laut Ergebnis nicht erlaubt/fehlerhaft ist, sauber melden
-        if (($null -eq $pwdInfo.Password -or [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)) -and
-            -not [string]::IsNullOrWhiteSpace($decryptionStatus) -and
-            $decryptionStatus -notin @("Success", "NotApplicable")) {
-            $result.IsEncrypted = $true
-            $result.ErrorMessage = "Passwort kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)."
-            Write-Log "LAPS Passwort für $ComputerName kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)." -Level "Warning"
-            return $result
-        }
-        
-        # Validiere die Passwort-Daten
-        if ($null -eq $pwdInfo.Password -or [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)) {
-            $result.ErrorMessage = "Passwort-Daten enthalten kein Passwort."
-            Write-Log "LAPS Passwort-Daten für $ComputerName sind unvollständig (kein Passwort)." -Level "Warning"
-            return $result
-        }
-        
-        # Erfolgreicher Abruf
-        $result.Success = $true
-        if ($pwdInfo.Password -is [System.Security.SecureString]) {
-            $result.Password = $pwdInfo.Password
-        }
-        else {
-            $result.Password = ConvertTo-SecureString ([string]$pwdInfo.Password) -AsPlainText -Force
-        }
-        $result.ComputerName = if ($null -ne $pwdInfo.ComputerName) { $pwdInfo.ComputerName } else { $ComputerName }
-        $result.UserName = if ($null -ne $pwdInfo.Account -and -not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $pwdInfo.Account } else { "Administrator" }
-        $result.PasswordExpiresTimestamp = if ($pwdInfo.PSObject.Properties['ExpirationTimestamp']) { $pwdInfo.ExpirationTimestamp } else { $null }
-        $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime'] -and $pwdInfo.PasswordUpdateTime) { $pwdInfo.PasswordUpdateTime } else { $null }
-
-        if ($source -like "Legacy*") {
-            $result.LapsVersion = "Legacy LAPS (Windows Emulation)"
-            if ([string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) {
-                $result.UserName = "N/A (Legacy)"
+            if ($null -eq $pwdInfo) {
+                $notes.Add("Windows LAPS: keine Passwortdaten.")
             }
-        }
-        elseif ($source -like "Encrypted*" -or $source -like "Cleartext*") {
-            $result.LapsVersion = "Windows LAPS"
-        }
-        else {
-            $result.LapsVersion = if ($result.PasswordLastSetTimestamp) { "Windows LAPS" } else { "Unbekannt/Legacy" }
-        }
+            else {
+                $source = if ($pwdInfo.PSObject.Properties['Source']) { [string]$pwdInfo.Source } else { "" }
+                $decryptionStatus = if ($pwdInfo.PSObject.Properties['DecryptionStatus']) { [string]$pwdInfo.DecryptionStatus } else { "" }
+                $result.Source = $source
+                $result.DecryptionStatus = $decryptionStatus
+                $hasPassword = $null -ne $pwdInfo.Password -and -not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)
 
-        Write-Log "LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
-    }
-    catch {
-        $errorMsg = $_.Exception.Message
-        
-        # Prüfe auf Verschlüsselungsfehler (fehlende Berechtigungen zur Entschlüsselung)
-        if ($errorMsg -match "Deserialisieren|EncryptedPasswordAttributeRaw|Unerwartetes Zeichen") {
-            $result.IsEncrypted = $true
-            $result.ErrorMessage = "Passwort ist verschlüsselt. Sie haben keine Berechtigung zur Entschlüsselung oder der Entschlüsselungsschlüssel fehlt."
-            Write-Log "LAPS Passwort für $ComputerName ist verschlüsselt - fehlende Entschlüsselungsberechtigung." -Level "Warning"
-            return $result
-        }
-        # Prüfe auf spezifische Fehler
-        elseif ($errorMsg -match "computer in AD") {
-            $result.ErrorMessage = "Computer nicht im Active Directory gefunden."
-            Write-Log "Computer $ComputerName nicht im AD gefunden." -Level "Warning"
-        }
-        elseif ($errorMsg -match "run on a AD domain-joined machine") {
-            $result.ErrorMessage = "Dieses Programm muss auf einem AD-verbundenen Computer ausgeführt werden."
-            Write-Log "Programm muss auf AD-verbundenem Computer laufen." -Level "Error"
-        }
-        elseif ($errorMsg -match "Access is denied|Zugriff verweigert") {
-            $result.ErrorMessage = "Zugriff verweigert. Überprüfen Sie Ihre Berechtigungen."
-            Write-Log "Zugriff auf LAPS Passwort für $ComputerName verweigert." -Level "Warning"
-        }
-        else {
-            # Generischer Fehler - versuche Legacy LAPS als Fallback (nur ohne Domain)
-            if ([string]::IsNullOrWhiteSpace($Domain)) {
-                try {
-                    # Prüfe ob Legacy LAPS Cmdlet verfügbar ist
-                    if (Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue) {
-                        $legacyPwd = Get-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop
-                        if ($null -ne $legacyPwd -and $null -ne $legacyPwd.Password) {
-                            $result.Success = $true
-                            $result.Password = ConvertTo-SecureString $legacyPwd.Password -AsPlainText -Force
-                            $result.UserName = "Administrator"
-                            $result.PasswordExpiresTimestamp = $legacyPwd.ExpirationTimestamp
-                            $result.PasswordLastSetTimestamp = $null
-                            $result.LapsVersion = "Legacy LAPS (AdmPwd)"
-                            Write-Log "Legacy LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
-                            return $result
-                        }
+                if ($hasPassword) {
+                    $result.Success = $true
+                    $result.Password = if ($pwdInfo.Password -is [System.Security.SecureString]) { $pwdInfo.Password } else { ConvertTo-LapsSecureString ([string]$pwdInfo.Password) }
+                    $result.ComputerName = if ($null -ne $pwdInfo.ComputerName) { $pwdInfo.ComputerName } else { $ComputerName }
+                    $result.UserName = if (-not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $pwdInfo.Account } else { "Administrator" }
+                    $result.PasswordExpiresTimestamp = if ($pwdInfo.PSObject.Properties['ExpirationTimestamp']) { $pwdInfo.ExpirationTimestamp } else { $null }
+                    $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime'] -and $pwdInfo.PasswordUpdateTime) { $pwdInfo.PasswordUpdateTime } else { $null }
+
+                    if ($source -like "Legacy*") {
+                        $result.LapsVersion = "Legacy LAPS (ueber Windows LAPS gelesen)"
+                        if ([string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $result.UserName = "N/A (Legacy LAPS)" }
                     }
+                    elseif ($source -like "Encrypted*") { $result.LapsVersion = "Windows LAPS (verschluesselt)" }
+                    elseif ($source -like "Cleartext*") { $result.LapsVersion = "Windows LAPS (unverschluesselt)" }
+                    else { $result.LapsVersion = "Windows LAPS" }
+
+                    Write-Log "LAPS Passwort für $ComputerName erfolgreich abgerufen ($($result.LapsVersion))." -Level "Info"
+                    return $result
                 }
-                catch {
-                    Write-Log "Legacy LAPS Fallback fehlgeschlagen für $ComputerName : $($_.Exception.Message)" -Level "Debug"
+
+                if (-not [string]::IsNullOrWhiteSpace($decryptionStatus) -and $decryptionStatus -notin @("Success", "NotApplicable")) {
+                    # Verschlüsseltes Passwort vorhanden, aber keine Entschlüsselungsberechtigung -> eindeutiges Ergebnis
+                    $result.IsEncrypted = $true
+                    $result.ErrorMessage = "Passwort kann nicht entschluesselt werden (DecryptionStatus: $decryptionStatus). Berechtigung ueber 'ADPasswordEncryptionPrincipal' erforderlich."
+                    Write-Log "LAPS Passwort für $ComputerName kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)." -Level "Warning"
+                    return $result
                 }
+
+                $notes.Add("Windows LAPS: kein Passwort gespeichert$(if ($source) { " (Source: $source)" }).")
             }
-            
-            $result.ErrorMessage = $errorMsg
-            Write-Log "Fehler beim Abrufen des LAPS Passworts für $ComputerName : $errorMsg" -Level "Error"
+        }
+        catch {
+            $errorMsg = $_.Exception.Message
+            if ($errorMsg -match "Deserialisieren|EncryptedPasswordAttributeRaw|Unerwartetes Zeichen|decrypt") {
+                $result.IsEncrypted = $true
+                $result.ErrorMessage = "Passwort ist verschluesselt. Sie haben keine Berechtigung zur Entschluesselung oder der Entschluesselungsschluessel fehlt."
+                Write-Log "LAPS Passwort für $ComputerName ist verschlüsselt - fehlende Entschlüsselungsberechtigung." -Level "Warning"
+                return $result
+            }
+            elseif ($errorMsg -match "computer in AD|find an object with identity|Objekt mit der Identit") {
+                $result.ErrorMessage = "Computer '$ComputerName' wurde im Active Directory nicht gefunden."
+                Write-Log "Computer $ComputerName nicht im AD gefunden." -Level "Warning"
+                return $result
+            }
+            elseif ($errorMsg -match "Access is denied|Zugriff verweigert") {
+                $notes.Add("Windows LAPS: Zugriff verweigert.")
+            }
+            else {
+                $notes.Add("Windows LAPS: $errorMsg")
+            }
         }
     }
-    
+    else {
+        $notes.Add("Windows-LAPS-Modul nicht verfuegbar.")
+    }
+
+    # 2) Legacy LAPS Cmdlet (AdmPwd.PS, ohne Domain-Parameter)
+    if ([string]::IsNullOrWhiteSpace($Domain) -and (Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue)) {
+        try {
+            $legacyPwd = Get-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop | Select-Object -First 1
+            if ($null -ne $legacyPwd -and -not [string]::IsNullOrWhiteSpace([string]$legacyPwd.Password)) {
+                $result.Success = $true
+                $result.Password = ConvertTo-LapsSecureString ([string]$legacyPwd.Password)
+                $result.UserName = "N/A (Legacy LAPS)"
+                $result.PasswordExpiresTimestamp = $legacyPwd.ExpirationTimestamp
+                $result.PasswordLastSetTimestamp = $null
+                $result.LapsVersion = "Legacy LAPS (AdmPwd)"
+                Write-Log "Legacy LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
+                return $result
+            }
+            $notes.Add("Legacy LAPS: kein Passwort lesbar.")
+        }
+        catch {
+            $notes.Add("Legacy LAPS: $($_.Exception.Message)")
+        }
+    }
+
+    # 3) Direktes Lesen der AD-Attribute (funktioniert auch ohne LAPS-Module, nur mit RSAT)
+    if (Get-Command -Name Get-ADComputer -ErrorAction SilentlyContinue) {
+        $adResult = Get-LapsPasswordFromAdAttribute -ComputerName $ComputerName -Domain $Domain
+        if ($adResult.Success) {
+            Write-Log "LAPS Passwort für $ComputerName über AD-Attribute abgerufen ($($adResult.LapsVersion))." -Level "Info"
+            return $adResult
+        }
+        if ($adResult.IsEncrypted) {
+            Write-Log "LAPS Passwort für $ComputerName ist verschlüsselt und kann ohne Windows-LAPS-Modul nicht entschlüsselt werden." -Level "Warning"
+            return $adResult
+        }
+        # Die AD-Auswertung liefert die aussagekräftigste Ursache -> zuerst anzeigen
+        $notes.Insert(0, $adResult.ErrorMessage)
+    }
+    else {
+        $notes.Add("ActiveDirectory-Modul nicht verfuegbar.")
+    }
+
+    $result.ErrorMessage = (@($notes | Where-Object { $_ } | Select-Object -Unique)) -join " | "
+    Write-Log "LAPS Passwort für $ComputerName nicht verfügbar: $($result.ErrorMessage)" -Level "Warning"
     return $result
 }
 
@@ -777,11 +891,37 @@ function Reset-LapsPasswordEx {
             return $result
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($Domain)) {
-            throw "Set-LapsADPasswordExpirationTime ist nicht verfügbar und Legacy LAPS unterstützt keinen Domain-Parameter beim Reset."
+        # 4) Ohne LAPS-Module: Ablaufzeit direkt am Computerobjekt setzen (benötigt Schreibrecht auf das
+        #    Ablaufzeit-Attribut, entspricht der Reset-Berechtigung von Windows LAPS bzw. Legacy LAPS)
+        if (Get-Command -Name Set-ADComputer -ErrorAction SilentlyContinue) {
+            $adParams = @{}
+            if (-not [string]::IsNullOrWhiteSpace($Domain)) { $adParams.Server = $Domain }
+            $attributes = @(Get-LapsSchemaAttribute -Domain $Domain | Where-Object { $_ -in @('msLAPS-PasswordExpirationTime', 'ms-Mcs-AdmPwdExpirationTime') })
+            if ($attributes.Count -eq 0) {
+                throw "Das AD-Schema enthaelt keine LAPS-Attribute."
+            }
+
+            $identity = ($ComputerName.Trim() -split '\.')[0]
+            $computer = Get-ADComputer -Identity $identity -Properties $attributes @adParams -ErrorAction Stop
+            $replace = @{}
+            foreach ($attribute in $attributes) {
+                if ($null -ne $computer.$attribute -and -not [string]::IsNullOrWhiteSpace([string]$computer.$attribute)) {
+                    $replace[$attribute] = [int64]$effectiveTime.ToFileTimeUtc()
+                }
+            }
+            if ($replace.Count -eq 0) {
+                throw "Fuer $($computer.Name) ist keine LAPS-Ablaufzeit im AD gespeichert (LAPS nicht aktiv oder keine Leseberechtigung)."
+            }
+
+            Set-ADComputer -Identity $computer.DistinguishedName -Replace $replace @adParams -ErrorAction Stop
+            $result.Success = $true
+            $result.NewExpirationTime = $effectiveTime
+            $result.LapsVersion = if ($replace.ContainsKey('msLAPS-PasswordExpirationTime')) { "Windows LAPS (AD-Attribut)" } else { "Legacy LAPS (AD-Attribut)" }
+            Write-Log "LAPS-Ablaufzeit für $($computer.Name) direkt im AD gesetzt ($($replace.Keys -join ', '))." -Level "Info"
+            return $result
         }
 
-        throw "Weder Set-LapsADPasswordExpirationTime noch Reset-AdmPwdPassword sind verfügbar."
+        throw "Weder Set-LapsADPasswordExpirationTime, Reset-AdmPwdPassword noch das ActiveDirectory-Modul sind verfuegbar."
     }
     catch {
         $result.ErrorMessage = $_.Exception.Message
@@ -789,6 +929,15 @@ function Reset-LapsPasswordEx {
     }
     
     return $result
+}
+
+# Baut aus dem abgerufenen Klartext-Passwort einen SecureString (nur für die interne Weitergabe)
+function ConvertTo-LapsSecureString {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$PlainText)
+    $secure = New-Object System.Security.SecureString
+    foreach ($char in $PlainText.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+    return $secure
 }
 
 function Convert-SecureStringToPlainText {
@@ -1411,9 +1560,12 @@ $global:UpdateStatus = {
     # Export Selected Computer
     $controls.btnExportSelected.Add_Click({
         $selectedComputer = $controls.lstAdComputers.SelectedItem
+        if ($null -eq $selectedComputer -and -not [string]::IsNullOrWhiteSpace($controls.txtComputerName.Text)) {
+            $selectedComputer = $controls.txtComputerName.Text.Trim()
+        }
         if ($null -eq $selectedComputer) {
             & $global:UpdateStatus -IsLapsCheck "Kein Computer ausgewählt." "Warning"
-            [System.Windows.MessageBox]::Show("Bitte wählen Sie einen Computer aus der Liste aus.", "Warnung", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            [System.Windows.MessageBox]::Show("Bitte wählen Sie einen Computer aus der Liste aus oder geben Sie einen Namen ein.", "Warnung", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
             return
         }
 
@@ -1680,7 +1832,7 @@ $global:UpdateStatus = {
 
     # Update module status label
     if ($ModuleStatus) {
-        $moduleStatusText = "Module: Windows LAPS=$($ModuleStatus.NewModuleAvailable) | Legacy LAPS=$($ModuleStatus.LegacyModuleAvailable)"
+        $moduleStatusText = "Module: Windows LAPS=$($ModuleStatus.NewModuleAvailable) | Legacy LAPS=$($ModuleStatus.LegacyModuleAvailable) | ActiveDirectory=$($ModuleStatus.ADModuleAvailable)"
         $controls.lblModuleStatus.Text = $moduleStatusText
     }
 
@@ -1693,6 +1845,16 @@ $global:UpdateStatus = {
 $ErrorActionPreference = "Stop"
 
 try {
+    # Unter PowerShell 7 (Core) automatisch in Windows PowerShell 5.1 neu starten (WPF/RSAT/LAPS-Module)
+    if ($PSVersionTable.PSEdition -eq 'Core' -and -not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        $winPS = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        if (Test-Path -Path $winPS) {
+            Write-Log "PowerShell $($PSVersionTable.PSVersion) erkannt - Neustart in Windows PowerShell 5.1." -Level "INFO"
+            Start-Process -FilePath $winPS -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$PSCommandPath`"")
+            exit 0
+        }
+    }
+
     # Erforderliche Assemblies früh laden (MessageBox wird bereits bei den Startprüfungen benötigt)
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
@@ -1713,23 +1875,28 @@ try {
     $legacyGetAvailable = [bool](Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue)
     $legacyResetAvailable = [bool](Get-Command -Name Reset-AdmPwdPassword -ErrorAction SilentlyContinue)
     $legacyModuleAvailable = $legacyGetAvailable -and $legacyResetAvailable
+    $adModuleAvailable = [bool](Get-Module -Name ActiveDirectory -ListAvailable)
 
-    if (-Not ($newModuleAvailable -or $legacyModuleAvailable)) {
-        $errorMsg = "Kein unterstütztes LAPS-Modul gefunden!`n`nErforderlich ist entweder:`n- Windows LAPS (Modul 'Laps')`noder`n- Legacy LAPS Cmdlets (Get-AdmPwdPassword/Reset-AdmPwdPassword)."
+    if (-Not ($newModuleAvailable -or $legacyModuleAvailable -or $adModuleAvailable)) {
+        $errorMsg = "Keine Moeglichkeit zum Lesen von LAPS-Passwoertern gefunden!`n`nErforderlich ist mindestens eines von:`n- Windows LAPS (Modul 'LAPS', ab Windows 10/11 bzw. Server 2019 mit Update April 2023)`n- Legacy LAPS Cmdlets (AdmPwd.PS)`n- ActiveDirectory-Modul (RSAT) fuer das direkte Lesen der LAPS-Attribute"
         Write-Log $errorMsg -Level "ERROR"
-        [System.Windows.MessageBox]::Show($errorMsg, "Fehler - LAPS Module fehlt", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        [System.Windows.MessageBox]::Show($errorMsg, "Fehler - Module fehlen", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
         exit 502
+    }
+    if (-not $adModuleAvailable) {
+        Write-Log "ActiveDirectory-Modul (RSAT) nicht gefunden - AD-Computerliste nicht verfuegbar." -Level "WARNING"
     }
     
     Write-Log "easyLAPS Script gestartet. Logging in: $script:LogFilePath" -Level "INFO"
     Write-Log "PowerShell Version: $($PSVersionTable.PSVersion)" -Level "INFO"
-    Write-Log "Modulstatus: Windows LAPS=$newModuleAvailable, Legacy LAPS=$legacyModuleAvailable" -Level "INFO"
+    Write-Log "Modulstatus: Windows LAPS=$newModuleAvailable, Legacy LAPS=$legacyModuleAvailable, ActiveDirectory=$adModuleAvailable" -Level "INFO"
     Write-Log "easyLAPS GUI wird gestartet..." -Level "INFO"
 
     # Hauptformular anzeigen
     Show-LAPSForm -ModuleStatus @{
         NewModuleAvailable = $newModuleAvailable
         LegacyModuleAvailable = $legacyModuleAvailable
+        ADModuleAvailable = $adModuleAvailable
     }
 
     Write-Log "easyLAPS GUI wurde vom Benutzer oder einem internen Prozess geschlossen." -Level "INFO"

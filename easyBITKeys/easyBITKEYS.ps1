@@ -9,9 +9,10 @@
 #   - Key 7 to under 12 months:    Orange
 #   - Key 12 months or older:      LightCoral
 #
-# Features: search, age filter, column sorting, CSV export, copy key to clipboard
-# (clipboard is cleared automatically after a timeout) and removal of the selected
-# AD entry (after confirmation, AD mode only).
+# Features: Key ID (Password ID) display/search, computers without a stored key,
+# detection of missing read permissions, search, age filter, column sorting, CSV export,
+# copy key to clipboard (cleared automatically after a timeout) and removal of the
+# selected AD entry (after confirmation, AD mode only).
 #
 # Version information is maintained in this script, README.md and CHANGELOG.md.
 #
@@ -23,7 +24,7 @@
 # Diese Konfigurationswerte sollten am Anfang des Skripts stehen.
 
 # Allgemeine Skriptinformationen
-$ScriptVersion   = "0.6.0"
+$ScriptVersion   = "0.7.0"
 $LastUpdate      = "2026-10-14" # Datum der letzten Aktualisierung
 $Author          = "ANDREAS HEPP | www.phinit.de"
 $APPName         = "easyBITKEYS"
@@ -43,6 +44,13 @@ $script:LastLoadFailed = $false
 
 # Sicherheit: Zwischenablage nach X Sekunden automatisch leeren (0 = deaktiviert)
 $ClipboardClearSeconds = 30
+
+# Active Directory (leer = Standard-Domain des angemeldeten Benutzers / gesamte Domain)
+$ADServer                = ""    # z. B. "dc01.contoso.local" oder "contoso.local"
+$ADSearchBase            = ""    # z. B. "OU=Clients,DC=contoso,DC=local"
+$ShowComputersWithoutKey = $true # Computer ohne gespeicherten Wiederherstellungsschlüssel (grau) anzeigen
+
+$script:ClientModeReason = ""
 
 #endregion Script Configuration
 
@@ -180,6 +188,15 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
     exit
 }
 
+# Common parameters for all AD queries (server / search base from the configuration)
+function Get-ADQuerySplat {
+    param([switch]$NoSearchBase)
+    $params = @{}
+    if (-not [string]::IsNullOrWhiteSpace($ADServer)) { $params.Server = $ADServer }
+    if (-not $NoSearchBase -and -not [string]::IsNullOrWhiteSpace($ADSearchBase)) { $params.SearchBase = $ADSearchBase }
+    return $params
+}
+
 # Self-Diagnostic at startup
 function Test-Requirements {
     try {
@@ -188,6 +205,7 @@ function Test-Requirements {
         # Check if ActiveDirectory module is available
         if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
             Write-Log -Message "ActiveDirectory module not available. Switching to client mode with sample data." -Level WARN
+            $script:ClientModeReason = "The ActiveDirectory PowerShell module (RSAT) is not installed."
             $script:ClientMode = $true
             return $true
         }
@@ -195,10 +213,12 @@ function Test-Requirements {
         # Check permissions (simplified)
         try {
             # Try to read AD objects as permission test
-            Get-ADObject -Filter {objectClass -eq "computer"} -ResultSetSize 1 | Out-Null
+            $adParams = Get-ADQuerySplat
+            Get-ADObject -Filter "objectClass -eq 'computer'" -ResultSetSize 1 @adParams -ErrorAction Stop | Out-Null
         }
         catch {
-            Write-Log -Message "Insufficient AD permissions: $_. Switching to client mode with sample data." -Level WARN
+            Write-Log -Message "AD not reachable or insufficient permissions: $_. Switching to client mode with sample data." -Level WARN
+            $script:ClientModeReason = "Active Directory could not be queried: $($_.Exception.Message)"
             $script:ClientMode = $true
             return $true
         }
@@ -208,6 +228,7 @@ function Test-Requirements {
     }
     catch {
         Write-Log -Message "Error in Self-Diagnostic: $_. Switching to client mode with sample data." -Level WARN
+        $script:ClientModeReason = "Self-diagnostic failed: $($_.Exception.Message)"
         $script:ClientMode = $true
         return $true
     }
@@ -561,6 +582,7 @@ $xamlString = @'
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <!--  Search bar and filter  -->
@@ -601,6 +623,10 @@ $xamlString = @'
                                         Content="ComputerName"
                                         TabIndex="2"
                                         ToolTip="Search by computer name" />
+                                    <ComboBoxItem
+                                        AutomationProperties.Name="Search by key ID"
+                                        Content="Key ID"
+                                        ToolTip="Search by recovery key ID (shown on the BitLocker recovery screen)" />
                                     <ComboBoxItem
                                         AutomationProperties.Name="Search by BitLocker key"
                                         Content="BitLockerKey"
@@ -646,6 +672,7 @@ $xamlString = @'
                                     <ComboBoxItem Content="Current (&lt; 7 months)" />
                                     <ComboBoxItem Content="Older (7-12 months)" />
                                     <ComboBoxItem Content="Critical (&gt;= 12 months)" />
+                                    <ComboBoxItem Content="No key available" />
                                 </ComboBox>
                                 <Button
                                     x:Name="btnApplyFilter"
@@ -714,6 +741,10 @@ $xamlString = @'
                                 </DataGridTextColumn.HeaderStyle>
                             </DataGridTextColumn>
                             <DataGridTextColumn
+                                Width="1.3*"
+                                Binding="{Binding KeyId}"
+                                Header="Key ID" />
+                            <DataGridTextColumn
                                 Width="2*"
                                 Binding="{Binding BitLockerKey}"
                                 Header="BitLockerKey">
@@ -736,6 +767,16 @@ $xamlString = @'
                             </DataGridTextColumn>
                         </DataGrid.Columns>
                     </DataGrid>
+
+                    <!--  Status line (mode, counts, warnings)  -->
+                    <TextBlock
+                        x:Name="txtStatusInfo"
+                        Grid.Row="2"
+                        Margin="5,6,5,0"
+                        FontSize="11"
+                        Foreground="#505050"
+                        TextWrapping="Wrap"
+                        Text="" />
                 </Grid>
             </Border>
         </Grid>
@@ -810,6 +851,7 @@ $btnExport = $window.FindName("btnExport")
 $btnDelete = $window.FindName("btnDelete")
 $btnInfo = $window.FindName("btnInfo")
 $btnExit = $window.FindName("btnExit")
+$txtStatusInfo = $window.FindName("txtStatusInfo")
 
 
 # Update GUI elements
@@ -905,80 +947,142 @@ else {
     Write-Log -Message "Client mode active. Skipping ActiveDirectory module import." -Level INFO
 }
 
+# Returns the background color for a key based on its age
+function Get-KeyRowColor {
+    param([bool]$HasKey, $Date)
+    if (-not $HasKey -or $null -eq $Date) { return "#D3D3D3" }  # LightGray
+    $ageMonths = ((Get-Date) - $Date).Days / 30
+    if ($ageMonths -ge 12) { return "#F08080" }                  # LightCoral
+    if ($ageMonths -ge 7)  { return "#FFA500" }                  # Orange
+    return "#90EE90"                                             # LightGreen
+}
+
+# Converts msFVE-RecoveryGuid (byte array) into the key ID shown on the BitLocker recovery screen
+function ConvertTo-RecoveryKeyId {
+    param($Value)
+    try {
+        if ($null -eq $Value) { return "" }
+        if ($Value -is [guid]) { return $Value.ToString().ToUpperInvariant() }
+        $bytes = [byte[]]$Value
+        if ($bytes.Length -ne 16) { return "" }
+        return (New-Object System.Guid (,$bytes)).ToString().ToUpperInvariant()
+    }
+    catch {
+        return ""
+    }
+}
+
 # Function to load BitLocker keys
 function Get-BitLockerKeys {
     try {
         Write-Log -Message "Starting AD query for BitLocker keys..." -Level INFO
         Write-DebugMessage -Message "Executing AD query for msFVE-RecoveryInformation objects"
-        
-        # AD query: All BitLocker keys (msFVE-RecoveryInformation)
-        $bitLockerKeys = Get-ADObject -Filter 'objectClass -eq "msFVE-RecoveryInformation"' -Properties msFVE-RecoveryPassword, whenCreated, distinguishedName
-        
-        $script:LastLoadFailed = $false
-        $tableData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
-        $now = Get-Date
-        
-        $counter = 1
+        $adParams = Get-ADQuerySplat
+        $script:KeyReadWarning = ""
+        $script:LoadStats = @{ Keys = 0; ComputersWithKey = 0; ComputersWithoutKey = 0; UnreadableKeys = 0 }
+
+        # AD query: All BitLocker recovery objects (children of the computer objects)
+        $bitLockerKeys = @(Get-ADObject -Filter "objectClass -eq 'msFVE-RecoveryInformation'" `
+            -Properties 'msFVE-RecoveryPassword', 'msFVE-RecoveryGuid', 'whenCreated' @adParams -ErrorAction Stop)
+
+        # Computer objects (name lookup and detection of computers without a key)
+        $computerNames = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $computerList = @()
+        try {
+            $computerList = @(Get-ADComputer -Filter * @adParams -ErrorAction Stop)
+            foreach ($computer in $computerList) {
+                $computerNames[[string]$computer.DistinguishedName] = [string]$computer.Name
+            }
+        }
+        catch {
+            Write-Log -Message "Computer objects could not be read (computers without key are not listed): $_" -Level WARN
+        }
+
+        $rows = New-Object System.Collections.Generic.List[object]
+        $computersWithKey = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
         foreach ($key in $bitLockerKeys) {
-            # Extract the computer name from the DistinguishedName (parent object of the recovery info).
+            $dn = [string]$key.DistinguishedName
+            # Parent object of the recovery information = computer object.
             # Split only on unescaped commas so that escaped characters in RDNs are handled correctly.
-            $dnParts = [regex]::Split([string]$key.distinguishedName, '(?<!\\),')
-            if ($dnParts.Length -ge 2) {
+            $dnParts = [regex]::Split($dn, '(?<!\\),')
+            $parentDn = if ($dnParts.Length -ge 2) { $dn.Substring($dnParts[0].Length + 1) } else { "" }
+            [void]$computersWithKey.Add($parentDn)
+
+            if ($computerNames.ContainsKey($parentDn)) {
+                $computerName = $computerNames[$parentDn]
+            }
+            elseif ($dnParts.Length -ge 2) {
                 $computerName = ($dnParts[1] -replace '^CN=', '') -replace '\\(.)', '$1'
             }
             else {
                 $computerName = "Unknown"
             }
-            
-            # Extract BitLocker key and date
+
             $bitLockerKey = [string]$key.'msFVE-RecoveryPassword'
             $date = $key.whenCreated
-            
-            # Create object for table data
-            $rowObj = [PSCustomObject]@{
-                Nr = $counter
+            $hasKey = -not [string]::IsNullOrEmpty($bitLockerKey)
+            if (-not $hasKey) { $script:LoadStats.UnreadableKeys++ }
+
+            $rows.Add([PSCustomObject]@{
+                Nr = 0
                 ComputerName = $computerName
+                KeyId = ConvertTo-RecoveryKeyId -Value $key.'msFVE-RecoveryGuid'
                 BitLockerKey = $bitLockerKey
                 Datum = if ($null -ne $date) { $date.ToString("dd.MM.yyyy") } else { "" }
                 DatumSort = if ($null -ne $date) { [DateTime]$date } else { [DateTime]::MinValue }
-                DistinguishedName = $key.distinguishedName  # Store for later delete operations
-                RowBackground = $null  # Will be set shortly
-            }
-            
-            # Background color based on date
-            if ([string]::IsNullOrEmpty($bitLockerKey) -or $null -eq $date) {
-                $rowObj.RowBackground = "#D3D3D3"  # LightGray
-                Write-DebugMessage -Message "Empty key for $computerName, setting gray background"
-            }
-            else {
-                $ageMonths = ($now - $date).Days / 30
-                
-                if ($ageMonths -ge 12) {
-                    $rowObj.RowBackground = "#F08080"  # LightCoral
-                    Write-DebugMessage -Message "Key for $computerName is $ageMonths months old (critical)"
-                }
-                elseif ($ageMonths -ge 7) {
-                    $rowObj.RowBackground = "#FFA500"  # Orange
-                    Write-DebugMessage -Message "Key for $computerName is $ageMonths months old (warning)"
-                }
-                else {
-                    $rowObj.RowBackground = "#90EE90"  # LightGreen
-                    Write-DebugMessage -Message "Key for $computerName is $ageMonths months old (current)"
-                }
-            }
-            
-            $tableData.Add($rowObj)
-            $counter++
+                HasKey = $hasKey
+                DistinguishedName = $dn  # Recovery object, used for delete operations
+                RowBackground = Get-KeyRowColor -HasKey $hasKey -Date $date
+            })
         }
-        
-        Write-Log -Message "AD query completed: $($tableData.Count) entries found" -Level INFO
-        return $tableData
+
+        $script:LoadStats.Keys = $bitLockerKeys.Count
+        $script:LoadStats.ComputersWithKey = $computersWithKey.Count
+
+        if ($ShowComputersWithoutKey) {
+            foreach ($computer in $computerList) {
+                if ($computersWithKey.Contains([string]$computer.DistinguishedName)) { continue }
+                $script:LoadStats.ComputersWithoutKey++
+                $rows.Add([PSCustomObject]@{
+                    Nr = 0
+                    ComputerName = [string]$computer.Name
+                    KeyId = ""
+                    BitLockerKey = ""
+                    Datum = ""
+                    DatumSort = [DateTime]::MinValue
+                    HasKey = $false
+                    DistinguishedName = $null  # No recovery object -> nothing to delete
+                    RowBackground = "#D3D3D3"
+                })
+            }
+        }
+
+        # The recovery password is a confidential attribute: objects are visible, but the
+        # password stays empty without the "Read msFVE-RecoveryPassword" permission.
+        if ($script:LoadStats.UnreadableKeys -gt 0) {
+            $script:KeyReadWarning = "$($script:LoadStats.UnreadableKeys) of $($bitLockerKeys.Count) recovery objects were found without a readable recovery password. " +
+                "Missing permission to read 'msFVE-RecoveryPassword' (confidential attribute) - e.g. Domain Admins or delegated 'Read msFVE-RecoveryPassword' on the OU."
+            Write-Log -Message $script:KeyReadWarning -Level WARN
+        }
+
+        # Sort by computer name, newest key first, and number the rows
+        $tableData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
+        $counter = 1
+        foreach ($row in ($rows | Sort-Object ComputerName, @{ Expression = 'DatumSort'; Descending = $true })) {
+            $row.Nr = $counter++
+            $tableData.Add($row)
+        }
+
+        $script:LastLoadFailed = $false
+        Write-Log -Message "AD query completed: $($bitLockerKeys.Count) recovery objects, $($script:LoadStats.ComputersWithoutKey) computers without key" -Level INFO
+        return ,$tableData
     }
     catch {
         $script:LastLoadFailed = $true
         Write-Log -Message "Error in AD query: $_" -Level ERROR
         [System.Windows.MessageBox]::Show("Error in AD query: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-        return New-Object System.Collections.ObjectModel.ObservableCollection[Object]
+        return ,(New-Object System.Collections.ObjectModel.ObservableCollection[Object])
     }
 }
 
@@ -986,51 +1090,69 @@ function Get-BitLockerKeys {
 function Get-SampleBitLockerKeys {
     Write-Log -Message "Loading sample BitLocker keys for client mode..." -Level INFO
     $tableData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
-    
+
     $sampleData = @(
-        @{ Nr = 1; ComputerName = "ClientPC01"; BitLockerKey = "1234-5678-9012-3456"; DatumSort = (Get-Date).AddMonths(-2); RowBackground = "#90EE90" },
-        @{ Nr = 2; ComputerName = "ClientPC02"; BitLockerKey = "2345-6789-0123-4567"; DatumSort = (Get-Date).AddMonths(-8); RowBackground = "#FFA500" },
-        @{ Nr = 3; ComputerName = "ClientPC03"; BitLockerKey = "3456-7890-1234-5678"; DatumSort = (Get-Date).AddMonths(-13); RowBackground = "#F08080" },
-        @{ Nr = 4; ComputerName = "ClientPC04"; BitLockerKey = ""; DatumSort = (Get-Date).AddMonths(-1); RowBackground = "#D3D3D3" }
+        @{ Nr = 1; ComputerName = "ClientPC01"; KeyId = "11111111-AAAA-BBBB-CCCC-000000000001"; BitLockerKey = "111111-222222-333333-444444-555555-666666-777777-888888"; DatumSort = (Get-Date).AddMonths(-2) },
+        @{ Nr = 2; ComputerName = "ClientPC02"; KeyId = "22222222-AAAA-BBBB-CCCC-000000000002"; BitLockerKey = "222222-333333-444444-555555-666666-777777-888888-999999"; DatumSort = (Get-Date).AddMonths(-8) },
+        @{ Nr = 3; ComputerName = "ClientPC03"; KeyId = "33333333-AAAA-BBBB-CCCC-000000000003"; BitLockerKey = "333333-444444-555555-666666-777777-888888-999999-000000"; DatumSort = (Get-Date).AddMonths(-13) },
+        @{ Nr = 4; ComputerName = "ClientPC04"; KeyId = ""; BitLockerKey = ""; DatumSort = [DateTime]::MinValue }
     )
-    
+
     foreach ($item in $sampleData) {
-        $item.Datum = $item.DatumSort.ToString("dd.MM.yyyy")
-        $rowObj = [PSCustomObject]$item
-        $tableData.Add($rowObj)
+        $item.HasKey = -not [string]::IsNullOrEmpty($item.BitLockerKey)
+        $item.Datum = if ($item.HasKey) { $item.DatumSort.ToString("dd.MM.yyyy") } else { "" }
+        $item.DistinguishedName = $null
+        $item.RowBackground = Get-KeyRowColor -HasKey $item.HasKey -Date $item.DatumSort
+        $tableData.Add([PSCustomObject]$item)
     }
-    
+
     Write-Log -Message "Sample data loaded: $($tableData.Count) entries" -Level INFO
-    return $tableData
+    return ,$tableData
+}
+
+# Updates the status line below the table
+function Update-StatusInfo {
+    if ($null -eq $txtStatusInfo) { return }
+    if ($script:ClientMode) {
+        $txtStatusInfo.Text = "CLIENT MODE - SAMPLE DATA (no real keys). Reason: $($script:ClientModeReason)"
+        $txtStatusInfo.Foreground = [System.Windows.Media.Brushes]::DarkRed
+        return
+    }
+
+    $target = if (-not [string]::IsNullOrWhiteSpace($ADServer)) { $ADServer } else { $env:USERDNSDOMAIN }
+    $scope = if (-not [string]::IsNullOrWhiteSpace($ADSearchBase)) { " | Search base: $ADSearchBase" } else { "" }
+    $stats = $script:LoadStats
+    $text = "Active Directory: $target$scope | Recovery keys: $($stats.Keys) | Computers with key: $($stats.ComputersWithKey)"
+    if ($ShowComputersWithoutKey) { $text += " | Computers without key: $($stats.ComputersWithoutKey)" }
+    if ($script:LastLoadFailed) { $text += " | LOAD FAILED - see log" }
+    if (-not [string]::IsNullOrEmpty($script:KeyReadWarning)) { $text += "`n" + $script:KeyReadWarning }
+    $txtStatusInfo.Text = $text
+    $txtStatusInfo.Foreground = if ($script:LastLoadFailed -or $script:KeyReadWarning) { [System.Windows.Media.Brushes]::DarkRed } else { [System.Windows.Media.Brushes]::DimGray }
 }
 
 # Fill DataGrid with BitLocker keys
 function Update-BitLockerKeyTable {
     try {
         Write-DebugMessage -Message "Updating BitLocker key table"
-        $tableData = if ($script:ClientMode) { Get-SampleBitLockerKeys } else { Get-BitLockerKeys }
-        
-        # Convert the collection to a proper ObservableCollection
+        [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
+        try {
+            $tableData = if ($script:ClientMode) { Get-SampleBitLockerKeys } else { Get-BitLockerKeys }
+        }
+        finally {
+            [System.Windows.Input.Mouse]::OverrideCursor = $null
+        }
+
         $observableCollection = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
-        
         foreach ($item in $tableData) {
             $observableCollection.Add($item)
         }
-        
-        # Dispatcher for thread-safe UI updates
-        $window.Dispatcher.Invoke([action]{
-            $dataGrid.ItemsSource = $observableCollection
 
-            $global:originalData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
-            foreach ($row in $observableCollection) {
-                $global:originalData.Add($row)
-            }
-            
-            # Style adjustment for rows based on RowBackground value
-            Update-RowStyling -DataGrid $dataGrid
-            
-            Write-DebugMessage -Message "DataGrid updated with $($observableCollection.Count) rows"
-        })
+        # Runs on the UI thread (called from the main script / event handlers)
+        $dataGrid.ItemsSource = $observableCollection
+        $global:originalData = $observableCollection
+        Update-RowStyling -DataGrid $dataGrid
+        Update-StatusInfo
+        Write-DebugMessage -Message "DataGrid updated with $($observableCollection.Count) rows"
     }
     catch {
         Write-Log -Message "Error updating table: $_" -Level ERROR
@@ -1138,7 +1260,7 @@ if ($null -ne $btnExport) {
                 $filePath = $dialog.FileName
                 
                 # Export exactly the entries currently displayed (respects search/filter)
-                $csvData = @($dataGrid.ItemsSource | Select-Object Nr, ComputerName, BitLockerKey, Datum)
+                $csvData = @($dataGrid.ItemsSource | Select-Object Nr, ComputerName, KeyId, BitLockerKey, Datum)
                 
                 $csvData | Export-Csv -Path $filePath -NoTypeInformation -Encoding UTF8
                 Write-Log -Message "CSV export to $filePath completed ($($csvData.Count) records)" -Level INFO
@@ -1171,19 +1293,21 @@ if ($null -ne $btnDelete) {
                 return
             }
             
-            $confirm = [System.Windows.MessageBox]::Show("Really remove the selected entry?", "Remove", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+            $dn = $selectedItem.DistinguishedName
+            if ([string]::IsNullOrWhiteSpace($dn)) {
+                [System.Windows.MessageBox]::Show("The selected computer has no BitLocker recovery object in Active Directory - nothing to remove.", "Note", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+                return
+            }
+
+            $confirm = [System.Windows.MessageBox]::Show("Really remove this BitLocker recovery key from Active Directory?`n`nComputer: $($selectedItem.ComputerName)`nKey ID: $($selectedItem.KeyId)`nDate: $($selectedItem.Datum)`n`nThis cannot be undone (unless the AD Recycle Bin is enabled).", "Remove", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
             
             if ($confirm -eq [System.Windows.MessageBoxResult]::Yes) {
-                $dn = $selectedItem.DistinguishedName
-                if ([string]::IsNullOrWhiteSpace($dn)) {
-                    [System.Windows.MessageBox]::Show("No DistinguishedName found for selected entry.", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-                    return
-                }
 
                 try {
                     # Delete AD object
                     Write-DebugMessage -Message "Removing AD object: $dn"
-                    Remove-ADObject -Identity $dn -Confirm:$false
+                    $removeParams = Get-ADQuerySplat -NoSearchBase
+                    Remove-ADObject -Identity $dn -Confirm:$false -ErrorAction Stop @removeParams
                     Write-Log -Message "AD object removed: $dn" -Level INFO
                     
                     # Update table
@@ -1223,12 +1347,15 @@ $APPName - $ScriptVersion
 Last update: $LastUpdate
 Author: $Author
 
-This tool displays all BitLocker keys from Active Directory.
+This tool displays all BitLocker recovery keys from Active Directory.
 Color coding:
 - Green: Current key (< 7 months)
 - Orange: Key 7 to under 12 months old
 - Red: Key 12 months or older
-- Gray: No key available
+- Gray: No key available (no recovery object or no permission to read it)
+
+Key ID: matches the "Recovery key ID" shown on the BitLocker recovery screen
+(search field "Key ID", the first 8 characters are sufficient).
 "@
             [System.Windows.MessageBox]::Show($infoText, "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
         }
@@ -1316,7 +1443,7 @@ if ($null -ne $btnSearch) {
                 $global:originalData = $dataGrid.ItemsSource
             }
             
-            $searchText = $txtSearch.Text.Trim()
+            $searchText = $txtSearch.Text.Trim().Trim('{', '}')
             if ([string]::IsNullOrEmpty($searchText)) {
                 [System.Windows.MessageBox]::Show("Please enter a search term.", "Search", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
                 return
@@ -1336,12 +1463,16 @@ if ($null -ne $btnSearch) {
                     "ComputerName" {
                         if ($item.ComputerName -like $searchPattern) { $match = $true }
                     }
+                    "Key ID" {
+                        if ($item.KeyId -like $searchPattern) { $match = $true }
+                    }
                     "BitLockerKey" {
                         if ($item.BitLockerKey -like $searchPattern) { $match = $true }
                     }
                     "All Fields" {
                         if (
                             ($item.ComputerName -like $searchPattern) -or
+                            ($item.KeyId -like $searchPattern) -or
                             ($item.BitLockerKey -like $searchPattern) -or
                             ($item.Datum -like $searchPattern)
                         ) { $match = $true }
@@ -1427,6 +1558,13 @@ if ($null -ne $btnApplyFilter) {
                     $match = $false
                     
                     switch ($filterOption) {
+                        "No key available" {
+                            if (-not $item.HasKey) { $match = $true }
+                        }
+                        { -not $item.HasKey } {
+                            # Entries without a key only match the "No key available" filter
+                            break
+                        }
                         "Current (< 7 months)" {
                             if ($ageInMonths -lt 7) { $match = $true }
                         }
@@ -1489,10 +1627,15 @@ if ($script:ClientMode) {
         $btnDelete.IsEnabled = $false
         $btnDelete.ToolTip = "Disabled in client mode"
     }
+    $APPName = "$APPName  [CLIENT MODE - SAMPLE DATA]"
+    [System.Windows.MessageBox]::Show("Active Directory is not available - the tool starts in CLIENT MODE with SAMPLE DATA (no real recovery keys).`n`nReason: $($script:ClientModeReason)`n`nRequirements: RSAT ActiveDirectory module, domain connectivity (AD Web Services) and read permissions.", "Client Mode", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
 }
 
 # Initialize
 Update-BitLockerKeyTable
+if (-not $script:ClientMode -and -not [string]::IsNullOrEmpty($script:KeyReadWarning)) {
+    [System.Windows.MessageBox]::Show($script:KeyReadWarning, "Missing read permission", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+}
 
 # Search functionality enhancement
 # Add key press event to search textbox before GUI is shown
