@@ -7,6 +7,13 @@
 
 Rekonstruiert aus der Git-Historie (im Repository existieren keine Pull Requests).
 
+## 2026-10-14 – Funktionserweiterung BitLocker-/LAPS-Auslesen
+
+### Hinzugefügt / Behoben
+- easyBITKEYS 0.7.0: Key ID, Computer ohne Schlüssel, Erkennung fehlender Leserechte, Statuszeile, konfigurierbarer Server/OU.
+- easyLAPS 0.5.0: Fallback-Kette für das Auslesen (Windows LAPS → Legacy → AD-Attribute), Reset-Fallback, Neustart in PowerShell 5.1.
+- `easyLAPS/Install/LAPS_INSTALL.ps1` überarbeitet; veraltete Authenticode-Signatur entfernt.
+
 ## 2026-10-14 – Audit und Bereinigung
 
 ### Sicherheit / Fehlerbehebung

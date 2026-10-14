@@ -3,6 +3,33 @@
 Alle nennenswerten Änderungen an `easyLAPS` werden in dieser Datei dokumentiert.
 Die Versionsnummer wird ausschließlich im Skript (`ScriptVersion`), in `README.md` und in dieser Datei gepflegt – nicht im Dateinamen.
 
+## [0.5.0] - 2026-10-14
+
+### Hinzugefügt
+- Passwortabruf mit Fallback-Kette: Windows LAPS (`Get-LapsADPassword`) → Legacy LAPS (`Get-AdmPwdPassword`) → **direktes Lesen der AD-Attribute** (`msLAPS-Password` als JSON, `ms-Mcs-AdmPwd`) über das ActiveDirectory-Modul. Damit funktioniert das Auslesen auch ohne installierte LAPS-Module.
+- Schema-Erkennung (gecacht): Es werden nur LAPS-Attribute angefragt, die im AD-Schema existieren.
+- Klare Ursachenmeldung, wenn kein Passwort gelesen werden kann (Computer nicht gefunden, kein Passwort gespeichert, fehlende Leseberechtigung, verschlüsselt ohne Entschlüsselungsrecht).
+- Reset-Fallback ohne LAPS-Module: Ablaufzeit (`msLAPS-PasswordExpirationTime` / `ms-Mcs-AdmPwdExpirationTime`) wird direkt am Computerobjekt gesetzt.
+- Automatischer Neustart in Windows PowerShell 5.1, wenn das Skript unter PowerShell 7 gestartet wird.
+- Modulstatus in der Fußzeile um das ActiveDirectory-Modul erweitert.
+
+### Behoben
+- Lieferte `Get-LapsADPassword` kein Passwort (z. B. nur Legacy-Attribut, kein Windows-LAPS-Eintrag), wurde kein Fallback versucht.
+- Start schlug fehl, wenn nur das ActiveDirectory-Modul (ohne LAPS-Module) vorhanden war.
+- „Computer nicht gefunden“ wird zuverlässig erkannt; FQDN-Eingaben werden für die AD-Abfrage auf den Hostnamen gekürzt.
+- **Export Selected** nutzt den eingegebenen Computernamen, wenn in der Liste nichts ausgewählt ist.
+
+### Geändert
+- Abgerufene Passwörter werden ohne `ConvertTo-SecureString -AsPlainText` in SecureStrings übernommen.
+
+### Install
+- `Install/LAPS_INSTALL.ps1` überarbeitet (veraltete Authenticode-Signatur entfernt):
+  - Schema-Prüfung vor der Erweiterung; `Update-LapsADSchema` nur nach ausdrücklicher Bestätigung.
+  - Ziel-OU frei eingebbar (vorbelegt mit der OU des lokalen Computers) und geprüft.
+  - Neu: Leserechte (`Set-LapsADReadPasswordPermission`) und Reset-Rechte (`Set-LapsADResetPasswordPermission`) für eine Gruppe delegieren; Berechtigungen anzeigen (`Find-LapsADExtendedRights`).
+  - LAPS-Test zeigt das Passwort nicht mehr im Klartext an (nur Konto, Quelle, Entschlüsselungsstatus, Länge, Zeiten).
+  - Protokollfenster, Bestätigungen vor allen Änderungen, nicht genehmigtes Verb `Configure-LAPS` entfernt.
+
 ## [0.4.0] - 2026-10-14
 
 ### Sicherheit

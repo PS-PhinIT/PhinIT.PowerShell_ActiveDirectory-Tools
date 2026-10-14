@@ -6,8 +6,8 @@ Sammlung von PowerShell-GUI-Tools (WPF) für die Active-Directory-Administration
 
 | Tool | Version | Zweck | Dokumentation |
 |---|---|---|---|
-| **easyBITKEYS** | 0.6.0 | BitLocker-Wiederherstellungsschlüssel aus AD anzeigen, filtern, exportieren, entfernen | [README](easyBITKeys/README.md) · [CHANGELOG](easyBITKeys/CHANGELOG.md) |
-| **easyLAPS** | 0.4.0 | LAPS-Passwörter (Windows LAPS / Legacy) anzeigen, zurücksetzen, exportieren; lokaler LAPS-Status und Diagnose | [README](easyLAPS/README.md) · [CHANGELOG](easyLAPS/CHANGELOG.md) |
+| **easyBITKEYS** | 0.7.0 | BitLocker-Wiederherstellungsschlüssel inkl. Key ID aus AD anzeigen, suchen, filtern, exportieren, entfernen; Computer ohne Schlüssel erkennen | [README](easyBITKeys/README.md) · [CHANGELOG](easyBITKeys/CHANGELOG.md) |
+| **easyLAPS** | 0.5.0 | LAPS-Passwörter (Windows LAPS / Legacy / direkt aus AD-Attributen) anzeigen, zurücksetzen, exportieren; lokaler LAPS-Status und Diagnose; Einrichtungs-GUI unter `Install/` | [README](easyLAPS/README.md) · [CHANGELOG](easyLAPS/CHANGELOG.md) |
 
 ## Ordnerstruktur
 

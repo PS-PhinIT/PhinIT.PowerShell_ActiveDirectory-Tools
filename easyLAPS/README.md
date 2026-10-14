@@ -1,6 +1,6 @@
 # easyLAPS – AD LAPS Passwort-Manager (GUI)
 
-**Version:** 0.4.0  
+**Version:** 0.5.0  
 **Datei:** `easyLAPS.ps1`  
 **Autor:** Andreas Hepp  
 **Letztes Update:** 14.10.2026
@@ -22,6 +22,18 @@
 - Unterstützung für:
 	- **Windows LAPS** (`Get-LapsADPassword`, `Set-LapsADPasswordExpirationTime`)
 	- **Legacy LAPS (AdmPwd)** (`Get-AdmPwdPassword`, `Reset-AdmPwdPassword`)
+	- **Direktes Lesen der AD-Attribute** über das ActiveDirectory-Modul, wenn keine LAPS-Module vorhanden sind
+
+## 🔎 Auslese-Reihenfolge
+
+1. **Windows LAPS** – `Get-LapsADPassword -AsPlainText` (liest Windows-LAPS- und Legacy-Passwörter, entschlüsselt bei Berechtigung)
+2. **Legacy LAPS** – `Get-AdmPwdPassword`
+3. **AD-Attribute** – `msLAPS-Password` (Windows LAPS, unverschlüsselt) bzw. `ms-Mcs-AdmPwd` (Legacy). Vorhandene Attribute werden vorher im Schema geprüft.
+
+Kann kein Passwort gelesen werden, nennt easyLAPS die Ursache: Computer nicht gefunden, kein Passwort gespeichert (Richtlinie nicht aktiv), fehlende Leseberechtigung oder verschlüsseltes Passwort ohne Entschlüsselungsrecht.
+Verschlüsselte Passwörter (`msLAPS-EncryptedPassword`) lassen sich nur mit dem Windows-LAPS-Modul entschlüsseln.
+
+Der **Reset** nutzt `Set-LapsADPasswordExpirationTime`, dann `Reset-AdmPwdPassword` und als Fallback das direkte Setzen der Ablaufzeit (`msLAPS-PasswordExpirationTime` / `ms-Mcs-AdmPwdExpirationTime`).
 
 > Hinweis zur Rotation gemäß Microsoft Learn: Für **AD-Objekte** wird das Passwort über
 > `Set-LapsADPasswordExpirationTime` auf „abgelaufen“ gesetzt. Die tatsächliche Rotation
@@ -38,11 +50,9 @@
 
 ## 🧩 Voraussetzungen
 
-- **Windows PowerShell 5.1** (GUI/WPF)
-- **ActiveDirectory-Modul** (für `Get-ADComputer`)
-- Mindestens ein unterstützter LAPS-Pfad:
-	- Windows LAPS Modul **oder**
-	- Legacy LAPS Cmdlets (AdmPwd)
+- **Windows PowerShell 5.1** (GUI/WPF) – unter PowerShell 7 startet sich das Tool automatisch in 5.1 neu
+- **ActiveDirectory-Modul** (RSAT) für die Computerliste und das direkte Lesen der Attribute
+- Mindestens eines davon: Windows-LAPS-Modul, Legacy-LAPS-Cmdlets (AdmPwd.PS) oder ActiveDirectory-Modul
 
 ## ▶️ Verwendung
 

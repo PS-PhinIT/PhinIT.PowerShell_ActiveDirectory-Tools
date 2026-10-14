@@ -3,6 +3,27 @@
 Alle relevanten Änderungen an `easyBITKEYS` werden hier dokumentiert.
 Die Versionsnummer wird ausschließlich im Skript (`$ScriptVersion`), in `README.md` und in dieser Datei gepflegt – nicht im Dateinamen.
 
+## [0.7.0] - 2026-10-14
+
+### Added
+- Spalte **Key ID** (aus `msFVE-RecoveryGuid`) – entspricht der Wiederherstellungsschlüssel-ID auf dem BitLocker-Wiederherstellungsbildschirm; neues Suchfeld „Key ID“ (Klammern werden ignoriert).
+- Computer **ohne** gespeicherten Wiederherstellungsschlüssel werden grau aufgeführt (`$ShowComputersWithoutKey`), neuer Filter „No key available“.
+- Erkennung fehlender Leserechte auf das vertrauliche Attribut `msFVE-RecoveryPassword` (Hinweis beim Laden und in der Statuszeile).
+- Statuszeile unter der Tabelle (Domain/OU, Anzahl Schlüssel, Computer mit/ohne Schlüssel, Warnungen).
+- Konfiguration `$ADServer` und `$ADSearchBase` für andere Domains bzw. Einschränkung auf eine OU (gilt für Abfrage, Selbstdiagnose und Entfernen).
+- Client Mode wird beim Start mit Ursache gemeldet und in Fenstertitel/Statuszeile als „SAMPLE DATA“ gekennzeichnet.
+
+### Fixed
+- Computername wird über das übergeordnete Computerobjekt ermittelt (statt nur aus dem CN-Text).
+- Einträge ohne Schlüssel erscheinen nicht mehr im Altersfilter „Critical“.
+- Entfernen prüft vor der Bestätigung, ob ein AD-Objekt existiert, und zeigt Computer, Key ID und Datum an; Fehler von `Remove-ADObject` werden zuverlässig gemeldet.
+- Tabellenaktualisierung ohne `Dispatcher.Invoke`-Umweg (Aufruf erfolgt bereits im UI-Thread); Wartecursor während der AD-Abfrage.
+
+### Changed
+- Tabelle sortiert initial nach Computername und neuestem Schlüssel zuerst.
+- Beispieldaten im Client Mode im echten 48-stelligen Schlüsselformat.
+- CSV-Export enthält die Key ID.
+
 ## [0.6.0] - 2026-10-14
 
 ### Security
