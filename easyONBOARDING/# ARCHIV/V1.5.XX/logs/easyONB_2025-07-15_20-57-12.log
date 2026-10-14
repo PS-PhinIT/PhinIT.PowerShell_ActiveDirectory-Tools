@@ -1,9 +1,0 @@
-[2025-07-15 20:57:12] [INFO] Skript 'easyONB_V2.0.1.ps1' gestartet.
-[2025-07-15 20:57:13] [INFO] Event-Handler für die Navigation wurden registriert.
-[2025-07-15 20:57:13] [INFO] Lade erforderliche .NET-Assemblies für die GUI...
-[2025-07-15 20:57:13] [INFO] GUI-Assemblies erfolgreich geladen.
-[2025-07-15 20:57:13] [INFO] Lade XAML-GUI-Definition...
-[2025-07-15 20:57:14] [INFO] XAML-Datei erfolgreich geladen und geparst.
-[2025-07-15 20:57:14] [INFO] Binde GUI-Steuerelemente an Variablen...
-[2025-07-15 20:57:14] [INFO] Wechsle zu Tab: step1Panel
-[2025-07-15 20:57:14] [INFO] GUI wird gestartet. Warte auf Benutzereingaben.

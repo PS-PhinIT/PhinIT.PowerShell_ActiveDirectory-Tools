@@ -1,7 +1,0 @@
-﻿[2026-05-03T17:42:08.2265860Z][INFO] Start Python 3.13.x :: install-exe
-[2026-05-03T17:42:08.8308144Z][OK] SHA256 validiert: C1CB40978B28F696B111C36034A1BDEDA17D25E35C74A08EF5E5FF405A63FC20
-[2026-05-03T17:42:08.8390180Z][INFO] Installerquelle: offline-cache
-[2026-05-03T17:42:08.8466522Z][INFO] Installerpfad: Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\setup-cache\python\python-3.13-amd64.exe
-[2026-05-03T17:42:08.8545582Z][INFO] Python-Zielverzeichnis: C:\Program Files\Python313
-[2026-05-03T17:42:13.0506936Z][WARN] Python wurde nach der Installation im selben Lauf noch nicht erneut erkannt.
-[2026-05-03T17:42:13.0594733Z][OK] Installation erfolgreich.

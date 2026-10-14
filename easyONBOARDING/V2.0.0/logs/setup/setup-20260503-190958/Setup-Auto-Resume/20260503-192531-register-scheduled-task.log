@@ -1,4 +1,0 @@
-﻿[2026-05-03T17:25:31.2941398Z][INFO] Start Setup Auto Resume :: register-scheduled-task
-[2026-05-03T17:25:31.4272279Z][INFO] Execute: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
-[2026-05-03T17:25:31.4368289Z][INFO] Arguments: -NoProfile -ExecutionPolicy Bypass -File Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\setup_dev.ps1 -SetupStatePath Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\logs\setup\setup-state.json -EnableAutoResumeScheduledTask:$true -ResumeScheduledTaskName easyONBOARDING-V2-Setup-Resume
-[2026-05-03T17:25:32.0787256Z][OK] Gruende: SessionManager:PendingFileRenameOperations

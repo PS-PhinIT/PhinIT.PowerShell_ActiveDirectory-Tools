@@ -1,4 +1,0 @@
-﻿[2026-05-03T17:42:15.5094343Z][INFO] Start IIS Application Request Routing (ARR) :: install-msi
-[2026-05-03T17:42:15.5185488Z][INFO] MSI-Quelle: Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\setup-cache\iis\arr\arr-x64.msi
-[2026-05-03T17:42:15.5275048Z][INFO] MSI-Detail-Log: Z:\00-GitWork\PhinIT-Active-Directory-File-Tools\easyONBOARDING\V2.0.0\logs\setup\setup-20260503-190958\IIS-Application-Request-Routing-(ARR)\20260503-194215-install-msi.msi.log
-[2026-05-03T17:42:19.5770411Z][OK] Installation erfolgreich.
