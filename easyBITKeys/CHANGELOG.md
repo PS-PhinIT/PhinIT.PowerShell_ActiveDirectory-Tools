@@ -11,6 +11,8 @@ Die Versionsnummer wird ausschließlich im Skript (`$ScriptVersion`), in `README
 - XAML-Platzhalter werden nicht mehr per `ExpandString` (dynamische Code-Auswertung) ersetzt, sondern gezielt und XML-maskiert.
 - Zwischenablage wird nach dem Kopieren eines Wiederherstellungsschlüssels nach 30 Sekunden sowie beim Schließen automatisch geleert (nur wenn sie noch den kopierten Key enthält).
 - Hinweis auf Klartext-Schlüssel nach CSV-Export.
+- Suchbegriffe werden nicht mehr ins Log geschrieben (Suche nach Key-Fragmenten landete im Klartext im Log).
+- Eingebautes Zeilen-Kopieren des DataGrids (`Strg+C` kopierte die ganze Zeile inkl. Key ohne Auto-Löschen) deaktiviert; `Strg+C` nutzt jetzt die Copy-Key-Logik mit Auto-Löschen.
 - Sucheingaben werden als Literal behandelt (Wildcard-Zeichen wie `[` `*` werden maskiert).
 
 ### Fixed

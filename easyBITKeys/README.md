@@ -18,7 +18,7 @@
 - Suche (Computername, Key oder alle Felder) und Altersfilter
 - Spaltensortierung per Klick auf den Spaltenkopf (auf-/absteigend, Datum chronologisch)
 - CSV-Export der aktuell angezeigten Einträge (berücksichtigt Suche/Filter)
-- Key in Zwischenablage kopieren – die Zwischenablage wird nach **30 Sekunden** automatisch geleert (`$ClipboardClearSeconds`, `0` = deaktiviert) sowie beim Schließen des Tools
+- Key in Zwischenablage kopieren (`Copy Key` oder `Strg+C` in der Liste) – die Zwischenablage wird nach **30 Sekunden** automatisch geleert (`$ClipboardClearSeconds`, `0` = deaktiviert) sowie beim Schließen des Tools
 - Entfernen eines AD-Eintrags nach Bestätigung (nur im AD-Modus)
 
 ## Standalone-Verhalten
@@ -49,7 +49,7 @@ Wenn das AD-Modul oder Berechtigungen fehlen, schaltet das Tool automatisch in d
 
 ## Logging
 
-Logs werden unter `Logs\easyBITKEYS_<yyyy-MM-dd>.log` neben dem Skript geschrieben (Fallback: `%TEMP%\easyBITKEYS_fallback.log`). Wiederherstellungsschlüssel werden **nicht** geloggt.
+Logs werden unter `Logs\easyBITKEYS_<yyyy-MM-dd>.log` neben dem Skript geschrieben (Fallback: `%TEMP%\easyBITKEYS_fallback.log`). Wiederherstellungsschlüssel und Suchbegriffe werden **nicht** geloggt.
 
 ## Sicherheitshinweise
 

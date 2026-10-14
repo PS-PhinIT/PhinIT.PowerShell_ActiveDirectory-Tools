@@ -661,6 +661,7 @@ $xamlString = @'
                     <DataGrid
                         x:Name="dataGrid"
                         Grid.Row="1"
+                        ClipboardCopyMode="None"
                         Margin="0,10,0,0"
                         AlternatingRowBackground="#F9F9F9"
                         AutoGenerateColumns="False"
@@ -1323,7 +1324,7 @@ if ($null -ne $btnSearch) {
             
             $searchField = ($cmbSearchField.SelectedItem).Content.ToString()
             $searchPattern = "*$([System.Management.Automation.WildcardPattern]::Escape($searchText))*"
-            Write-DebugMessage -Message "Searching for '$searchText' in field '$searchField'"
+            Write-DebugMessage -Message "Searching in field '$searchField'"
             
             # Create new filtered collection
             $filteredData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
@@ -1354,7 +1355,7 @@ if ($null -ne $btnSearch) {
             
             $dataGrid.ItemsSource = $filteredData
             
-            Write-Log -Message "Search performed: $($filteredData.Count) matches for '$searchText' in field '$searchField'" -Level INFO
+            Write-Log -Message "Search performed: $($filteredData.Count) matches in field '$searchField'" -Level INFO
             
             if ($filteredData.Count -eq 0) {
                 [System.Windows.MessageBox]::Show("No entries found.", "Search", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
@@ -1467,6 +1468,18 @@ if ($null -ne $btnApplyFilter) {
 #region DataGrid Interactions
 # Column sorting uses the built-in DataGrid sorting (ascending/descending toggle).
 # The Date column sorts via the DateTime property "DatumSort" (SortMemberPath).
+# Built-in row copy is disabled (ClipboardCopyMode="None"); Ctrl+C uses the Copy Key
+# logic so the clipboard is cleared automatically.
+if ($null -ne $dataGrid -and $null -ne $btnCopyKey) {
+    $dataGrid.Add_PreviewKeyDown({
+        param($eventSender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::C -and
+            ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) {
+            $btnCopyKey.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
+            $e.Handled = $true
+        }
+    })
+}
 #endregion
 
 #region Application Initialization and Cleanup
