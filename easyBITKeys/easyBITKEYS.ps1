@@ -1,35 +1,30 @@
+﻿#Requires -Version 5.1
 # Author: ANDREAS HEPP | www.phinit.de
-# 
-# This script reads all BitLocker Keys (msFVE-RecoveryInformation) from Active Directory
-# and displays them in a color-coded GUI.
+#
+# easyBITKEYS reads all BitLocker recovery keys (msFVE-RecoveryInformation) from
+# Active Directory and displays them in a color-coded WPF GUI.
 # Status colors:
-#   - No key available: LightGray
-#   - Key current up to 6 months: LightGreen
-#   - Key older than 7 months: Orange
-#   - Key older than 12 months: LightCoral
-# 
-# The application provides buttons to export as CSV, delete the selected entry
-# (after confirmation), and close the application.
+#   - No key available:            LightGray
+#   - Key younger than 7 months:   LightGreen
+#   - Key 7 to under 12 months:    Orange
+#   - Key 12 months or older:      LightCoral
 #
-# The DataGrid displays 4 columns:
-#   "Nr" (only as wide as the content),
-#   "ComputerName" (fills the remaining space),
-#   "BitLockerKey" (fills the remaining space),
-#   "Datum" (only as wide as the content).
+# Features: search, age filter, column sorting, CSV export, copy key to clipboard
+# (clipboard is cleared automatically after a timeout) and removal of the selected
+# AD entry (after confirmation, AD mode only).
 #
-# The footer (with URL) is displayed as a panel below the buttons and
-# has the same background color as the header (as defined in the INI file).
+# Version information is maintained in this script, README.md and CHANGELOG.md.
 #
-# NOTE: The application can also run in client mode without the AD module,
-# displaying sample data for demonstration purposes.
+# NOTE: The application also runs in client mode without the AD module or without
+# sufficient permissions, displaying sample data for demonstration purposes.
 # ---------------------------------------------------------------------
 
 #region Script Configuration
 # Diese Konfigurationswerte sollten am Anfang des Skripts stehen.
 
 # Allgemeine Skriptinformationen
-$ScriptVersion   = "0.5.3"
-$LastUpdate      = "2026-06-09" # Datum der letzten Aktualisierung
+$ScriptVersion   = "0.6.0"
+$LastUpdate      = "2026-10-14" # Datum der letzten Aktualisierung
 $Author          = "ANDREAS HEPP | www.phinit.de"
 $APPName         = "easyBITKEYS"
 $APPDescription  = "easyBITKEYS displays BitLocker keys from Active Directory in a color-coded manner."
@@ -44,10 +39,10 @@ $FontSize        = [float]12   # Standard-Schriftgröße für die GUI
 $global:DebugMode = 0 # Standardmäßig deaktiviert
 $script:Debug = $global:DebugMode # Debug-Modus für das Skript setzen
 $script:ClientMode = $false
+$script:LastLoadFailed = $false
 
-# Log-Datei Konfiguration
-$LogFileName = "easyBITKEYS.log"
-$LogFile = $null
+# Sicherheit: Zwischenablage nach X Sekunden automatisch leeren (0 = deaktiviert)
+$ClipboardClearSeconds = 30
 
 #endregion Script Configuration
 
@@ -75,8 +70,6 @@ if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") {
 if (-not $script:ScriptRoot) { 
     $script:ScriptRoot = "."
 }
-
-$LogFile = Join-Path -Path $script:ScriptRoot -ChildPath $LogFileName
 
 #region Logging Functions
 # Module for logging
@@ -174,10 +167,16 @@ function Write-DebugMessage {
 #endregion
 
 #region Initialization and Requirements Check
-# Ensure script runs in PowerShell 5.1
-if ($PSVersionTable.PSVersion.Major -ne 5) {
-    Write-Host "Switching to PowerShell 5.1..." -ForegroundColor Yellow
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+# Ensure script runs in Windows PowerShell 5.1 (WPF/RSAT). PowerShell 7+ (Core) restarts in 5.1
+# without elevation - reading BitLocker keys from AD does not require local admin rights.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    if (-not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        Write-Host "Switching to Windows PowerShell 5.1..." -ForegroundColor Yellow
+        Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"")
+    }
+    else {
+        Write-Host "Please start easyBITKEYS with Windows PowerShell 5.1 (powershell.exe)." -ForegroundColor Red
+    }
     exit
 }
 
@@ -240,7 +239,7 @@ $xamlString = @'
     Background="#FFFFFF"
     FontFamily="$FontFamily"
     FontSize="$FontSize"
-    ResizeMode="CanMinimize"
+    ResizeMode="CanResize"
     WindowStartupLocation="CenterScreen">
 
     <Window.Resources>
@@ -500,7 +499,7 @@ $xamlString = @'
                                             VerticalAlignment="Center"
                                             FontSize="11"
                                             Foreground="#E0E0E0"
-                                            Text="Key &gt; 6 months" />
+                                            Text="Key 7 - 12 months" />
                                     </StackPanel>
                                     <StackPanel Margin="0,2" Orientation="Horizontal">
                                         <Rectangle
@@ -513,7 +512,20 @@ $xamlString = @'
                                             VerticalAlignment="Center"
                                             FontSize="11"
                                             Foreground="#E0E0E0"
-                                            Text="Key &gt; 12 months" />
+                                            Text="Key &gt;= 12 months" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,2" Orientation="Horizontal">
+                                        <Rectangle
+                                            Width="15"
+                                            Height="15"
+                                            Margin="0,0,8,0"
+                                            VerticalAlignment="Center"
+                                            Fill="LightGray" />
+                                        <TextBlock
+                                            VerticalAlignment="Center"
+                                            FontSize="11"
+                                            Foreground="#E0E0E0"
+                                            Text="No key available" />
                                     </StackPanel>
                                 </StackPanel>
                             </GroupBox>
@@ -633,7 +645,7 @@ $xamlString = @'
                                     <ComboBoxItem Content="Show all" />
                                     <ComboBoxItem Content="Current (&lt; 7 months)" />
                                     <ComboBoxItem Content="Older (7-12 months)" />
-                                    <ComboBoxItem Content="Critical (&gt; 12 months)" />
+                                    <ComboBoxItem Content="Critical (&gt;= 12 months)" />
                                 </ComboBox>
                                 <Button
                                     x:Name="btnApplyFilter"
@@ -656,6 +668,7 @@ $xamlString = @'
                         BorderBrush="#E0E0E0"
                         BorderThickness="1"
                         CanUserResizeRows="False"
+                        CanUserSortColumns="True"
                         GridLinesVisibility="Horizontal"
                         HeadersVisibility="Column"
                         HorizontalScrollBarVisibility="Auto"
@@ -712,6 +725,7 @@ $xamlString = @'
                             <DataGridTextColumn
                                 Width="120"
                                 Binding="{Binding Datum}"
+                                SortMemberPath="DatumSort"
                                 Header="Date">
                                 <DataGridTextColumn.HeaderStyle>
                                     <Style BasedOn="{StaticResource {x:Type DataGridColumnHeader}}" TargetType="DataGridColumnHeader">
@@ -754,8 +768,20 @@ $xamlString = @'
 #endregion
 
 #region Initialize GUI Elements
-# Expand PowerShell variables in the XAML string
-$expandedXaml = $ExecutionContext.InvokeCommand.ExpandString($xamlString)
+# Replace the known placeholders in the XAML string (XML-escaped, no dynamic code evaluation)
+$xamlPlaceholders = [ordered]@{
+    '$APPName'       = $APPName
+    '$FontFamily'    = $FontFamily
+    '$FontSize'      = $FontSize
+    '$ScriptVersion' = $ScriptVersion
+    '$LastUpdate'    = $LastUpdate
+    '$Author'        = $Author
+}
+$expandedXaml = $xamlString
+foreach ($placeholder in $xamlPlaceholders.Keys) {
+    $escapedValue = [System.Security.SecurityElement]::Escape([System.Convert]::ToString($xamlPlaceholders[$placeholder], [System.Globalization.CultureInfo]::InvariantCulture))
+    $expandedXaml = $expandedXaml.Replace($placeholder, $escapedValue)
+}
 
 # Create XAML reader from the expanded string
 try {
@@ -857,6 +883,12 @@ catch {
 #endregion
 
 #region ActiveDirectory Integration
+# Run self-diagnostic BEFORE importing the AD module (decides between AD mode and client mode)
+if (-not (Test-Requirements)) {
+    [System.Windows.MessageBox]::Show("The requirements for execution are not met. See log file for details.", "Self-Diagnostic Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+    exit
+}
+
 # Import ActiveDirectory module
 if (-not $script:ClientMode) {
     try {
@@ -881,42 +913,44 @@ function Get-BitLockerKeys {
         # AD query: All BitLocker keys (msFVE-RecoveryInformation)
         $bitLockerKeys = Get-ADObject -Filter 'objectClass -eq "msFVE-RecoveryInformation"' -Properties msFVE-RecoveryPassword, whenCreated, distinguishedName
         
-        # Clear and refill DataGrid
+        $script:LastLoadFailed = $false
         $tableData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
+        $now = Get-Date
         
         $counter = 1
         foreach ($key in $bitLockerKeys) {
-            # Extract the actual computer name from the DistinguishedName
-            $dnParts = $key.distinguishedName.Split(',')
+            # Extract the computer name from the DistinguishedName (parent object of the recovery info).
+            # Split only on unescaped commas so that escaped characters in RDNs are handled correctly.
+            $dnParts = [regex]::Split([string]$key.distinguishedName, '(?<!\\),')
             if ($dnParts.Length -ge 2) {
-                $computerName = $dnParts[1] -replace "^CN=", ""
+                $computerName = ($dnParts[1] -replace '^CN=', '') -replace '\\(.)', '$1'
             }
             else {
                 $computerName = "Unknown"
             }
             
             # Extract BitLocker key and date
-            $bitLockerKey = $key.'msFVE-RecoveryPassword'
+            $bitLockerKey = [string]$key.'msFVE-RecoveryPassword'
             $date = $key.whenCreated
             
             # Create object for table data
-            $rowObj = New-Object PSObject -Property @{
+            $rowObj = [PSCustomObject]@{
                 Nr = $counter
                 ComputerName = $computerName
                 BitLockerKey = $bitLockerKey
-                Datum = $date.ToString("dd.MM.yyyy")
+                Datum = if ($null -ne $date) { $date.ToString("dd.MM.yyyy") } else { "" }
+                DatumSort = if ($null -ne $date) { [DateTime]$date } else { [DateTime]::MinValue }
                 DistinguishedName = $key.distinguishedName  # Store for later delete operations
                 RowBackground = $null  # Will be set shortly
             }
             
             # Background color based on date
-            if ([string]::IsNullOrEmpty($bitLockerKey)) {
+            if ([string]::IsNullOrEmpty($bitLockerKey) -or $null -eq $date) {
                 $rowObj.RowBackground = "#D3D3D3"  # LightGray
                 Write-DebugMessage -Message "Empty key for $computerName, setting gray background"
             }
             else {
-                $ageDays = (Get-Date) - $date
-                $ageMonths = $ageDays.Days / 30
+                $ageMonths = ($now - $date).Days / 30
                 
                 if ($ageMonths -ge 12) {
                     $rowObj.RowBackground = "#F08080"  # LightCoral
@@ -940,6 +974,7 @@ function Get-BitLockerKeys {
         return $tableData
     }
     catch {
+        $script:LastLoadFailed = $true
         Write-Log -Message "Error in AD query: $_" -Level ERROR
         [System.Windows.MessageBox]::Show("Error in AD query: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
         return New-Object System.Collections.ObjectModel.ObservableCollection[Object]
@@ -952,14 +987,15 @@ function Get-SampleBitLockerKeys {
     $tableData = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
     
     $sampleData = @(
-        @{ Nr = 1; ComputerName = "ClientPC01"; BitLockerKey = "1234-5678-9012-3456"; Datum = (Get-Date).AddMonths(-2).ToString("dd.MM.yyyy"); RowBackground = "#90EE90" },
-        @{ Nr = 2; ComputerName = "ClientPC02"; BitLockerKey = "2345-6789-0123-4567"; Datum = (Get-Date).AddMonths(-8).ToString("dd.MM.yyyy"); RowBackground = "#FFA500" },
-        @{ Nr = 3; ComputerName = "ClientPC03"; BitLockerKey = "3456-7890-1234-5678"; Datum = (Get-Date).AddMonths(-13).ToString("dd.MM.yyyy"); RowBackground = "#F08080" },
-        @{ Nr = 4; ComputerName = "ClientPC04"; BitLockerKey = ""; Datum = (Get-Date).AddMonths(-1).ToString("dd.MM.yyyy"); RowBackground = "#D3D3D3" }
+        @{ Nr = 1; ComputerName = "ClientPC01"; BitLockerKey = "1234-5678-9012-3456"; DatumSort = (Get-Date).AddMonths(-2); RowBackground = "#90EE90" },
+        @{ Nr = 2; ComputerName = "ClientPC02"; BitLockerKey = "2345-6789-0123-4567"; DatumSort = (Get-Date).AddMonths(-8); RowBackground = "#FFA500" },
+        @{ Nr = 3; ComputerName = "ClientPC03"; BitLockerKey = "3456-7890-1234-5678"; DatumSort = (Get-Date).AddMonths(-13); RowBackground = "#F08080" },
+        @{ Nr = 4; ComputerName = "ClientPC04"; BitLockerKey = ""; DatumSort = (Get-Date).AddMonths(-1); RowBackground = "#D3D3D3" }
     )
     
     foreach ($item in $sampleData) {
-        $rowObj = New-Object PSObject -Property $item
+        $item.Datum = $item.DatumSort.ToString("dd.MM.yyyy")
+        $rowObj = [PSCustomObject]$item
         $tableData.Add($rowObj)
     }
     
@@ -1042,6 +1078,48 @@ function Update-RowStyling {
 }
 #endregion
 
+#region Clipboard Handling
+# Copies a secret to the clipboard and clears it again after $ClipboardClearSeconds
+# (only if the clipboard still contains the copied secret).
+function Clear-ClipboardSecret {
+    try {
+        if (-not [string]::IsNullOrEmpty($script:ClipboardSecret) -and
+            [System.Windows.Forms.Clipboard]::ContainsText() -and
+            [System.Windows.Forms.Clipboard]::GetText() -eq $script:ClipboardSecret) {
+            [System.Windows.Forms.Clipboard]::Clear()
+            Write-Log -Message "Clipboard cleared automatically" -Level INFO
+        }
+    }
+    catch {
+        Write-Log -Message "Error clearing clipboard: $_" -Level WARN
+    }
+    finally {
+        $script:ClipboardSecret = $null
+        if ($null -ne $script:ClipboardTimer) { $script:ClipboardTimer.Stop() }
+    }
+}
+
+function Set-ClipboardSecret {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Text
+    )
+
+    [System.Windows.Forms.Clipboard]::SetText($Text)
+    $script:ClipboardSecret = $Text
+
+    if ($ClipboardClearSeconds -gt 0) {
+        if ($null -eq $script:ClipboardTimer) {
+            $script:ClipboardTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:ClipboardTimer.Add_Tick({ Clear-ClipboardSecret })
+        }
+        $script:ClipboardTimer.Stop()
+        $script:ClipboardTimer.Interval = [TimeSpan]::FromSeconds($ClipboardClearSeconds)
+        $script:ClipboardTimer.Start()
+    }
+}
+#endregion
+
 #region Button Event Handlers
 # Button events
 if ($null -ne $btnExport) {
@@ -1058,20 +1136,12 @@ if ($null -ne $btnExport) {
             if ($result -eq $true) {
                 $filePath = $dialog.FileName
                 
-                $csvData = @()
-                foreach ($item in $dataGrid.ItemsSource) {
-                    $csvData += [PSCustomObject]@{
-                        Nr = $item.Nr
-                        ComputerName = $item.ComputerName
-                        BitLockerKey = $item.BitLockerKey
-                        Datum = $item.Datum
-                    }
-                }
+                # Export exactly the entries currently displayed (respects search/filter)
+                $csvData = @($dataGrid.ItemsSource | Select-Object Nr, ComputerName, BitLockerKey, Datum)
                 
                 $csvData | Export-Csv -Path $filePath -NoTypeInformation -Encoding UTF8
-                Write-Log -Message "CSV export to $filePath completed" -Level INFO
-                Write-DebugMessage -Message "Exported $($csvData.Count) records to $filePath"
-                [System.Windows.MessageBox]::Show("Export completed!", "Export", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+                Write-Log -Message "CSV export to $filePath completed ($($csvData.Count) records)" -Level INFO
+                [System.Windows.MessageBox]::Show("Export completed ($($csvData.Count) entries).`n`nNote: The file contains BitLocker recovery keys in plain text. Store it in a protected location only.", "Export", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
             }
         }
         catch {
@@ -1155,8 +1225,8 @@ Author: $Author
 This tool displays all BitLocker keys from Active Directory.
 Color coding:
 - Green: Current key (< 7 months)
-- Orange: Key older than 7 months
-- Red: Key older than 12 months
+- Orange: Key 7 to under 12 months old
+- Red: Key 12 months or older
 - Gray: No key available
 "@
             [System.Windows.MessageBox]::Show($infoText, "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
@@ -1176,7 +1246,9 @@ if ($null -ne $btnRefresh) {
             Write-DebugMessage -Message "Refresh button clicked"
             Write-Log -Message "Manual refresh of BitLocker keys requested" -Level INFO
             Update-BitLockerKeyTable
-            [System.Windows.MessageBox]::Show("Data has been refreshed successfully.", "Refresh", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+            if (-not $script:LastLoadFailed) {
+                [System.Windows.MessageBox]::Show("Data has been refreshed successfully.", "Refresh", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+            }
         }
         catch {
             Write-Log -Message "Error during manual refresh: $_" -Level ERROR
@@ -1206,10 +1278,10 @@ if ($null -ne $btnCopyKey) {
                 return
             }
             
-            [System.Windows.Forms.Clipboard]::SetText($key)
+            Set-ClipboardSecret -Text $key
             Write-Log -Message "BitLocker key for computer $($selectedItem.ComputerName) copied to clipboard" -Level INFO
-            Write-DebugMessage -Message "Copied BitLocker key for $($selectedItem.ComputerName) to clipboard"
-            [System.Windows.MessageBox]::Show("The BitLocker key has been copied to the clipboard.", "Copied", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+            $clearHint = if ($ClipboardClearSeconds -gt 0) { "`n`nThe clipboard will be cleared automatically in $ClipboardClearSeconds seconds." } else { "" }
+            [System.Windows.MessageBox]::Show("The BitLocker key has been copied to the clipboard.$clearHint", "Copied", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
         }
         catch {
             Write-Log -Message "Error copying BitLocker key: $_" -Level ERROR
@@ -1250,6 +1322,7 @@ if ($null -ne $btnSearch) {
             }
             
             $searchField = ($cmbSearchField.SelectedItem).Content.ToString()
+            $searchPattern = "*$([System.Management.Automation.WildcardPattern]::Escape($searchText))*"
             Write-DebugMessage -Message "Searching for '$searchText' in field '$searchField'"
             
             # Create new filtered collection
@@ -1260,16 +1333,16 @@ if ($null -ne $btnSearch) {
                 
                 switch ($searchField) {
                     "ComputerName" {
-                        if ($item.ComputerName -like "*$searchText*") { $match = $true }
+                        if ($item.ComputerName -like $searchPattern) { $match = $true }
                     }
                     "BitLockerKey" {
-                        if ($item.BitLockerKey -like "*$searchText*") { $match = $true }
+                        if ($item.BitLockerKey -like $searchPattern) { $match = $true }
                     }
                     "All Fields" {
                         if (
-                            ($item.ComputerName -like "*$searchText*") -or
-                            ($item.BitLockerKey -like "*$searchText*") -or
-                            ($item.Datum -like "*$searchText*")
+                            ($item.ComputerName -like $searchPattern) -or
+                            ($item.BitLockerKey -like $searchPattern) -or
+                            ($item.Datum -like $searchPattern)
                         ) { $match = $true }
                     }
                 }
@@ -1345,29 +1418,8 @@ if ($null -ne $btnApplyFilter) {
             
             foreach ($item in $global:originalData) {
                 try {
-                    # Safely parse date with various formats
-                    $datum = $null
-                    $dateFormats = @("dd.MM.yyyy", "yyyy-MM-dd", "MM/dd/yyyy")
-                    
-                    foreach ($format in $dateFormats) {
-                        try {
-                            $datum = [DateTime]::ParseExact($item.Datum, $format, [System.Globalization.CultureInfo]::InvariantCulture)
-                            break # Stop once a format works
-                        } catch {
-                            # Continue to next format
-                        }
-                    }
-                    
-                    # If no format worked, try general parsing
-                    if ($null -eq $datum) {
-                        if ([DateTime]::TryParse($item.Datum, [ref]$datum)) {
-                            # Successfully parsed
-                        } else {
-                            # Set to minimum date if unparseable
-                            $datum = [DateTime]::MinValue
-                            Write-DebugMessage -Message "Could not parse date: $($item.Datum) for computer $($item.ComputerName)"
-                        }
-                    }
+                    # Use the stored DateTime value (no string parsing required)
+                    $datum = if ($item.DatumSort -is [DateTime]) { $item.DatumSort } else { [DateTime]::MinValue }
                     
                     $ageInMonths = (New-TimeSpan -Start $datum -End (Get-Date)).Days / 30
                     
@@ -1380,7 +1432,7 @@ if ($null -ne $btnApplyFilter) {
                         "Older (7-12 months)" {
                             if ($ageInMonths -ge 7 -and $ageInMonths -lt 12) { $match = $true }
                         }
-                        "Critical (> 12 months)" {
+                        "Critical (>= 12 months)" {
                             if ($ageInMonths -ge 12) { $match = $true }
                         }
                     }
@@ -1413,118 +1465,11 @@ if ($null -ne $btnApplyFilter) {
 #endregion
 
 #region DataGrid Interactions
-# Implement column sorting
-function SortColumn_Click {
-    param(
-        [Parameter(Mandatory=$true)]
-        [System.Object]$HeaderSender,
-        [Parameter(Mandatory=$true)]
-        [System.Windows.RoutedEventArgs]$RoutedEventArgs
-    )
-    
-    try {
-        if ($null -eq $HeaderSender -or $null -eq $HeaderSender.Column) {
-            Write-Log -Message "Invalid column header clicked" -Level WARN
-            return
-        }
-        
-        $headerClicked = $HeaderSender
-        $columnName = $headerClicked.Column.Header.ToString()
-        
-        Write-Log -Message "Sorting by column: $columnName" -Level INFO
-        Write-DebugMessage -Message "Sorting table by column: $columnName"
-        
-        # Get current data
-        $data = $dataGrid.ItemsSource
-        
-        # Sorting logic based on column
-        $sortedData = $null
-        
-        switch ($columnName) {
-            "Nr" {
-                $sortedData = [System.Linq.Enumerable]::OrderBy($data, [Func[Object, int]] { param($x) $x.Nr })
-            }
-            "ComputerName" {
-                $sortedData = [System.Linq.Enumerable]::OrderBy($data, [Func[Object, string]] { param($x) $x.ComputerName })
-            }
-            "BitLockerKey" {
-                $sortedData = [System.Linq.Enumerable]::OrderBy($data, [Func[Object, string]] { param($x) $x.BitLockerKey })
-            }
-            "Date" {
-                # Sort date as string in correct format (dd.MM.yyyy)
-                $sortedData = [System.Linq.Enumerable]::OrderBy($data, [Func[Object, DateTime]] { 
-                    param($x) 
-                    try {
-                        [DateTime]::ParseExact($x.Datum, "dd.MM.yyyy", [System.Globalization.CultureInfo]::InvariantCulture)
-                    } 
-                    catch {
-                        [DateTime]::MinValue
-                    }
-                })
-            }
-        }
-        
-        if ($null -ne $sortedData) {
-            # Convert to ObservableCollection
-            $sortedCollection = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
-            foreach ($item in $sortedData) {
-                $sortedCollection.Add($item)
-            }
-            
-            $dataGrid.ItemsSource = $sortedCollection
-            Write-DebugMessage -Message "Table sorted by $columnName"
-        }
-    }
-    catch {
-        Write-Log -Message "Error sorting column $columnName : $_" -Level ERROR
-    }
-}
-
-# Add column sorting event handlers
-try {
-    # Ensure Windows.Controls namespace is properly loaded
-    Add-Type -AssemblyName PresentationFramework
-    Add-Type -AssemblyName PresentationCore
-    Add-Type -AssemblyName WindowsBase
-
-    # Add handler using correct namespace
-    $dataGrid.AddHandler([System.Windows.Controls.Primitives.DataGridColumnHeader]::MouseLeftButtonUpEvent, 
-        [System.Windows.Input.MouseButtonEventHandler]{
-        param($columnHeaderSender, $columnHeaderEventArgs)
-        
-        try {
-            $header = [System.Windows.Media.VisualTreeHelper]::HitTest($dataGrid, $columnHeaderEventArgs.GetPosition($dataGrid)).VisualHit
-            
-            # Navigate up the tree to find the column header
-            while ($null -ne $header -and -not ($header -is [System.Windows.Controls.Primitives.DataGridColumnHeader])) {
-                $header = [System.Windows.Media.VisualTreeHelper]::GetParent($header)
-            }
-            
-            if ($null -ne $header -and $header -is [System.Windows.Controls.Primitives.DataGridColumnHeader]) {
-                $columnName = $header.Column.Header.ToString()
-                Write-DebugMessage -Message "Column header clicked: $columnName"
-                
-                # Call the sort function
-                SortColumn_Click -HeaderSender $header -RoutedEventArgs $columnHeaderEventArgs
-            }
-        }
-        catch {
-            Write-Log -Message "Error in column header click handler: $_" -Level ERROR
-        }
-    })
-}
-catch {
-    Write-Log -Message "Error setting up column sorting: $_" -Level ERROR
-}
+# Column sorting uses the built-in DataGrid sorting (ascending/descending toggle).
+# The Date column sorts via the DateTime property "DatumSort" (SortMemberPath).
 #endregion
 
 #region Application Initialization and Cleanup
-# Run self-diagnostic
-if (-not (Test-Requirements)) {
-    [System.Windows.MessageBox]::Show("The requirements for execution are not met. See log file for details.", "Self-Diagnostic Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
-    exit
-}
-
 if ($script:ClientMode) {
     Write-Log -Message "Running in client mode. AD actions are limited and sample data is used." -Level WARN
     if ($null -ne $btnDelete) {
@@ -1572,10 +1517,8 @@ if ($null -ne $dataGrid) {
 # Event for cleanup when closing window
 $window.Add_Closed({
     try {
-        # Stop INI monitoring
-        # if ($null -ne $global:IniWatcherEvent) {
-        #     Unregister-Event -SourceIdentifier $global:IniWatcherEvent.Name
-        # }
+        # Do not leave a copied recovery key in the clipboard after closing the tool
+        Clear-ClipboardSecret
         Write-Log -Message "Application is shutting down" -Level INFO
     }
     catch {
