@@ -1,3 +1,8 @@
+﻿#Requires -Version 5.1
+# easyLAPS - AD LAPS Passwort-Manager (GUI)
+# Autor: Andreas Hepp | www.phinit.de
+# Versionsangaben werden ausschließlich in diesem Skript, README.md und CHANGELOG.md gepflegt.
+
 #region [0.0 | EXE-Kompabilität]
 # Stellt sicher, dass das Skript als kompilierte EXE korrekt ausgeführt wird.
 
@@ -35,22 +40,20 @@ if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") {
 # Skriptinformationen
 $script:ScriptInfo = @{
     AppName = "easyLAPS"
-    ScriptVersion = "0.3.4"
+    ScriptVersion = "0.5.0"
     Author = "Andreas Hepp"
     ThemeColor = "#0078D7"
-    LastUpdate = (Get-Date -Format "yyyy-MM-dd")
+    LastUpdate = "2026-10-14"
     Company = "PhinIT"
     Website = "https://www.phinit.de"
     Description = "Local Admin Password Solution fuer Windows-Umgebungen"
-    Copyright = "© $(Get-Date -Format 'yyyy') PhinIT"
+    Copyright = "© 2026 PhinIT"
 }
 
 # Branding-GUI Einstellungen
 $script:BrandingGUI = @{
     APPName = $script:ScriptInfo.AppName
     FontFamily = "Segoe UI"
-    HeaderLogo = Join-Path $script:ScriptPath "resources\logo.png"
-    HeaderLogoURL = $script:ScriptInfo.Website
     FooterWebseite = $script:ScriptInfo.Website
     ThemeColor = $script:ScriptInfo.ThemeColor
 }
@@ -65,6 +68,10 @@ $script:registryPath = "HKCU:\Software\easyIT\$($script:ScriptInfo.AppName)"
 $script:debugMode = $false
 $script:logLevel = "Info" # Mögliche Werte: Error, Warning, Info, Debug
 $script:logRotationDays = 30 # Logs älter als X Tage werden gelöscht
+$script:logRotationDone = $false # Log-Rotation nur einmal pro Programmstart
+
+# Sicherheit: Zwischenablage nach X Sekunden automatisch leeren (0 = deaktiviert)
+$script:ClipboardClearSeconds = 30
 
 # Stellen Sie sicher, dass der Log-Ordner existiert
 if (-not (Test-Path -Path $script:logPath)) {
@@ -141,18 +148,23 @@ function Write-Log {
         [Parameter(Mandatory=$false)][string]$LogFilePath = $script:LogFilePath
     )
     
+    # Debug-Einträge nur im Debug-Modus schreiben
+    if ($Level -eq "Debug" -and -not $script:debugMode) { return }
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
     try {
-        # Log-Rotation durchführen
-        Invoke-LogRotation
+        # Log-Rotation nur einmal pro Programmstart durchführen (nicht bei jedem Log-Eintrag)
+        if (-not $script:logRotationDone) {
+            $script:logRotationDone = $true
+            Invoke-LogRotation
+        }
 
         # Sicherstellen, dass der Log-Ordner existiert
         $logDir = Split-Path -Path $LogFilePath -Parent
         if (-not (Test-Path -Path $logDir)) {
             New-Item -Path $logDir -ItemType Directory -Force | Out-Null
         }
-        
-        # Zeitstempel für Log-Eintrag
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         
         # Log-Eintrag formatieren
         $logEntry = "[$timestamp] [$Level] $Message"
@@ -188,7 +200,7 @@ function Invoke-LogRotation {
         $cutoffDate = (Get-Date).AddDays(-$rotationDays)
         
         # Finde alle Log-Dateien älter als der Cutoff
-        $oldLogs = Get-ChildItem -Path $script:logPath -Filter "*.log" | 
+        $oldLogs = Get-ChildItem -Path $script:logPath -Filter "*.log" -File -ErrorAction SilentlyContinue | 
                    Where-Object { $_.LastWriteTime -lt $cutoffDate }
         
         # Lösche alte Logs
@@ -252,19 +264,88 @@ function Show-ErrorMessage {
 #endregion
 
 #region [2.3 | Hilfsfunktionen]
-function Open-URLInBrowser {
-    param(
-        [Parameter(Mandatory=$true)][string]$Url
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Url)) { return }
-
+function Clear-ClipboardSecret {
+    # Leert die Zwischenablage nur, wenn sie noch das zuvor kopierte Passwort enthält.
     try {
-        Start-Process -FilePath $Url -ErrorAction Stop | Out-Null
+        if (-not [string]::IsNullOrEmpty($script:ClipboardSecret) -and
+            [System.Windows.Forms.Clipboard]::ContainsText() -and
+            [System.Windows.Forms.Clipboard]::GetText() -eq $script:ClipboardSecret) {
+            [System.Windows.Forms.Clipboard]::Clear()
+            Write-Log -Message "Zwischenablage automatisch geleert." -Level "Info"
+        }
     }
     catch {
-        Write-Log -Message "Konnte URL nicht öffnen ($Url): $($_.Exception.Message)" -Level "Warning"
+        Write-Log -Message "Fehler beim Leeren der Zwischenablage: $($_.Exception.Message)" -Level "Warning"
     }
+    finally {
+        $script:ClipboardSecret = $null
+        if ($null -ne $script:ClipboardTimer) { $script:ClipboardTimer.Stop() }
+    }
+}
+
+function Set-ClipboardSecret {
+    # Kopiert ein Geheimnis in die Zwischenablage und leert sie nach $script:ClipboardClearSeconds automatisch.
+    param(
+        [Parameter(Mandatory=$true)][string]$Text
+    )
+
+    [System.Windows.Forms.Clipboard]::SetText($Text)
+    $script:ClipboardSecret = $Text
+
+    if ($script:ClipboardClearSeconds -gt 0) {
+        if ($null -eq $script:ClipboardTimer) {
+            $script:ClipboardTimer = New-Object System.Windows.Threading.DispatcherTimer
+            $script:ClipboardTimer.Add_Tick({ Clear-ClipboardSecret })
+        }
+        $script:ClipboardTimer.Stop()
+        $script:ClipboardTimer.Interval = [TimeSpan]::FromSeconds($script:ClipboardClearSeconds)
+        $script:ClipboardTimer.Start()
+    }
+}
+
+function Get-LocalLapsStatus {
+    # Ermittelt LAPS-Installation und aktive Policy-Root des lokalen Systems.
+    # Policy-Roots in der von Windows LAPS ausgewerteten Reihenfolge (MS Learn: laps-management-policy-settings).
+    $status = [ordered]@{
+        SystemType    = "Unbekannt"
+        LapsInstalled = $false
+        LapsType      = ""
+        PolicyActive  = $false
+        PolicyRoot    = $null
+        PolicySource  = $null
+    }
+
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $status.SystemType = if ($os.ProductType -ne 1) { "Server" } else { "Client" }
+
+    $windowsLapsDll = Join-Path -Path $env:SystemRoot -ChildPath "System32\laps.dll"
+    $legacyLapsCse = Join-Path -Path $env:ProgramFiles -ChildPath "LAPS\CSE\AdmPwd.dll"
+    if ((Test-Path -Path $windowsLapsDll) -or (Get-Module -Name LAPS -ListAvailable -ErrorAction SilentlyContinue)) {
+        $status.LapsInstalled = $true
+        $status.LapsType = "Windows LAPS"
+    }
+    elseif (Test-Path -Path $legacyLapsCse) {
+        $status.LapsInstalled = $true
+        $status.LapsType = "Legacy LAPS (AdmPwd.dll)"
+    }
+
+    $policyRoots = [ordered]@{
+        "HKLM:\Software\Microsoft\Policies\LAPS"                          = "Windows LAPS (CSP/Intune)"
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\LAPS" = "Windows LAPS (Gruppenrichtlinie)"
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\LAPS\Config"   = "Windows LAPS (lokale Konfiguration)"
+        "HKLM:\Software\Policies\Microsoft Services\AdmPwd"              = "Legacy LAPS (Gruppenrichtlinie)"
+    }
+    foreach ($root in $policyRoots.Keys) {
+        $key = Get-Item -Path $root -ErrorAction SilentlyContinue
+        if ($null -ne $key -and $key.ValueCount -gt 0) {
+            $status.PolicyActive = $true
+            $status.PolicyRoot = $root
+            $status.PolicySource = $policyRoots[$root]
+            break
+        }
+    }
+
+    return [PSCustomObject]$status
 }
 
 function Update-GuiText {
@@ -377,7 +458,7 @@ function Export-LapsPasswordToCsv {
     )
     
     try {
-        $exportData = @()
+        $exportData = New-Object System.Collections.Generic.List[object]
         $totalComputers = $ComputerList.Count
         $currentComputer = 0
         
@@ -390,7 +471,7 @@ function Export-LapsPasswordToCsv {
             if ($lapsData.Success) {
                 $plainPassword = Convert-SecureStringToPlainText -SecureString $lapsData.Password
                 
-                $exportData += [PSCustomObject]@{
+                $exportData.Add([PSCustomObject]@{
                     ComputerName = $lapsData.ComputerName
                     UserName = $lapsData.UserName
                     Password = $plainPassword
@@ -398,11 +479,11 @@ function Export-LapsPasswordToCsv {
                     PasswordLastSet = if ($lapsData.PasswordLastSetTimestamp) { $lapsData.PasswordLastSetTimestamp.ToString('yyyy-MM-dd HH:mm:ss') } else { "N/A" }
                     LapsVersion = $lapsData.LapsVersion
                     ExportDate = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                }
+                })
             }
             else {
                 Write-Log "Fehler beim Exportieren von $computer : $($lapsData.ErrorMessage)" -Level "Warning"
-                $exportData += [PSCustomObject]@{
+                $exportData.Add([PSCustomObject]@{
                     ComputerName = $computer
                     UserName = "ERROR"
                     Password = $lapsData.ErrorMessage
@@ -410,7 +491,7 @@ function Export-LapsPasswordToCsv {
                     PasswordLastSet = "N/A"
                     LapsVersion = "N/A"
                     ExportDate = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                }
+                })
             }
         }
         
@@ -434,7 +515,7 @@ function Invoke-LapsPasswordRotation {
     )
     
     try {
-        $results = @()
+        $results = New-Object System.Collections.Generic.List[object]
         $totalComputers = $ComputerList.Count
         $currentComputer = 0
         $successCount = 0
@@ -448,22 +529,22 @@ function Invoke-LapsPasswordRotation {
             
             if ($resetResult.Success) {
                 $successCount++
-                $results += [PSCustomObject]@{
+                $results.Add([PSCustomObject]@{
                     ComputerName = $computer
                     Status = "Success"
                     Message = "Password rotation successful"
                     NewExpiration = if ($resetResult.NewExpirationTime) { $resetResult.NewExpirationTime.ToString('yyyy-MM-dd HH:mm:ss') } else { "N/A" }
-                }
+                })
             }
             else {
                 $failCount++
                 Write-Log "Fehler beim Rotieren von $computer : $($resetResult.ErrorMessage)" -Level "Warning"
-                $results += [PSCustomObject]@{
+                $results.Add([PSCustomObject]@{
                     ComputerName = $computer
                     Status = "Failed"
                     Message = $resetResult.ErrorMessage
                     NewExpiration = "N/A"
-                }
+                })
             }
         }
         
@@ -480,6 +561,122 @@ function Invoke-LapsPasswordRotation {
         Write-Log "Fehler bei Passwort-Rotation: $($_.Exception.Message)" -Level "Error"
         return @{ Success = $false; ErrorMessage = $_.Exception.Message }
     }
+}
+
+# Ermittelt (gecacht pro Domain), welche LAPS-Attribute im AD-Schema vorhanden sind.
+# Nicht vorhandene Attribute dürfen nicht bei Get-ADComputer -Properties angefragt werden.
+function Get-LapsSchemaAttribute {
+    param([string]$Domain = $null)
+
+    if ($null -eq $script:LapsSchemaCache) { $script:LapsSchemaCache = @{} }
+    $cacheKey = if ([string]::IsNullOrWhiteSpace($Domain)) { "." } else { $Domain.ToLowerInvariant() }
+    if ($script:LapsSchemaCache.ContainsKey($cacheKey)) { return $script:LapsSchemaCache[$cacheKey] }
+
+    $adParams = @{}
+    if (-not [string]::IsNullOrWhiteSpace($Domain)) { $adParams.Server = $Domain }
+
+    $wanted = @('msLAPS-Password', 'msLAPS-PasswordExpirationTime', 'msLAPS-EncryptedPassword', 'ms-Mcs-AdmPwd', 'ms-Mcs-AdmPwdExpirationTime')
+    $ldapFilter = '(|' + (($wanted | ForEach-Object { "(lDAPDisplayName=$_)" }) -join '') + ')'
+    $rootDse = Get-ADRootDSE @adParams -ErrorAction Stop
+    $found = @(Get-ADObject -SearchBase $rootDse.schemaNamingContext -LDAPFilter $ldapFilter -Properties lDAPDisplayName @adParams -ErrorAction Stop |
+               ForEach-Object { [string]$_.lDAPDisplayName })
+
+    Write-Log "LAPS-Schemaattribute ($cacheKey): $(if ($found.Count) { $found -join ', ' } else { 'keine' })" -Level "Info"
+    $script:LapsSchemaCache[$cacheKey] = $found
+    return $found
+}
+
+# Wandelt einen AD-FILETIME-Wert (Integer8) in lokale Zeit um
+function ConvertFrom-LapsFileTime {
+    param($Value)
+    try {
+        if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
+        $fileTime = [int64]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($fileTime -le 0) { return $null }
+        return [DateTime]::FromFileTimeUtc($fileTime).ToLocalTime()
+    }
+    catch {
+        return $null
+    }
+}
+
+# Fallback ohne LAPS-Module: liest die LAPS-Attribute direkt über das ActiveDirectory-Modul.
+# Unterstützt Windows LAPS (Klartext, msLAPS-Password) und Legacy LAPS (ms-Mcs-AdmPwd).
+# Verschlüsselte Windows-LAPS-Passwörter können nur mit Get-LapsADPassword entschlüsselt werden.
+function Get-LapsPasswordFromAdAttribute {
+    param(
+        [Parameter(Mandatory=$true)][string]$ComputerName,
+        [Parameter(Mandatory=$false)][string]$Domain = $null
+    )
+
+    $result = @{
+        Success = $false; Password = $null; UserName = $null
+        PasswordExpiresTimestamp = $null; PasswordLastSetTimestamp = $null
+        LapsVersion = "Unknown"; ErrorMessage = ""; ComputerName = $ComputerName
+        IsEncrypted = $false; Source = "AD-Attribut"; DecryptionStatus = $null
+    }
+
+    try {
+        $adParams = @{}
+        if (-not [string]::IsNullOrWhiteSpace($Domain)) { $adParams.Server = $Domain }
+
+        $attributes = @(Get-LapsSchemaAttribute -Domain $Domain)
+        if ($attributes.Count -eq 0) {
+            $result.ErrorMessage = "Das AD-Schema enthaelt keine LAPS-Attribute (weder Windows LAPS noch Legacy LAPS)."
+            return $result
+        }
+
+        # Get-ADComputer erwartet Name/sAMAccountName - FQDN auf den Hostnamen kürzen
+        $identity = ($ComputerName.Trim() -split '\.')[0]
+        $computer = Get-ADComputer -Identity $identity -Properties $attributes @adParams -ErrorAction Stop
+        $result.ComputerName = [string]$computer.Name
+
+        $windowsJson = if ($attributes -contains 'msLAPS-Password') { [string]$computer.'msLAPS-Password' } else { "" }
+        $windowsExpiry = if ($attributes -contains 'msLAPS-PasswordExpirationTime') { $computer.'msLAPS-PasswordExpirationTime' } else { $null }
+        $encrypted = if ($attributes -contains 'msLAPS-EncryptedPassword') { $computer.'msLAPS-EncryptedPassword' } else { $null }
+        $legacyPassword = if ($attributes -contains 'ms-Mcs-AdmPwd') { [string]$computer.'ms-Mcs-AdmPwd' } else { "" }
+        $legacyExpiry = if ($attributes -contains 'ms-Mcs-AdmPwdExpirationTime') { $computer.'ms-Mcs-AdmPwdExpirationTime' } else { $null }
+
+        if (-not [string]::IsNullOrWhiteSpace($windowsJson)) {
+            # Format laut Microsoft: {"n":"<Konto>","t":"<UTC-FILETIME hex>","p":"<Passwort>"}
+            $data = $windowsJson | ConvertFrom-Json
+            if ([string]::IsNullOrEmpty([string]$data.p)) { throw "msLAPS-Password enthaelt kein Passwort." }
+            $result.Password = ConvertTo-LapsSecureString ([string]$data.p)
+            $result.UserName = if ($data.n) { [string]$data.n } else { "Administrator" }
+            if ($data.t) {
+                try { $result.PasswordLastSetTimestamp = [DateTime]::FromFileTimeUtc([Convert]::ToInt64([string]$data.t, 16)).ToLocalTime() } catch { $result.PasswordLastSetTimestamp = $null }
+            }
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $windowsExpiry
+            $result.LapsVersion = "Windows LAPS (AD-Attribut, unverschluesselt)"
+            $result.Success = $true
+        }
+        elseif ($null -ne $encrypted -and @($encrypted).Count -gt 0) {
+            $result.IsEncrypted = $true
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $windowsExpiry
+            $result.LapsVersion = "Windows LAPS (verschluesselt)"
+            $result.ErrorMessage = "Das Passwort ist verschluesselt gespeichert (msLAPS-EncryptedPassword). Entschluesselung nur mit dem Windows-LAPS-Modul (Get-LapsADPassword) und Berechtigung ueber 'ADPasswordEncryptionPrincipal'."
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($legacyPassword)) {
+            $result.Password = ConvertTo-LapsSecureString $legacyPassword
+            $result.UserName = "N/A (Legacy LAPS)"
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $legacyExpiry
+            $result.LapsVersion = "Legacy LAPS (AD-Attribut)"
+            $result.Success = $true
+        }
+        elseif ($null -ne $windowsExpiry -or $null -ne $legacyExpiry) {
+            # Ablaufzeit lesbar, Passwort nicht -> vertrauliches Attribut ohne Leserecht
+            $result.PasswordExpiresTimestamp = ConvertFrom-LapsFileTime $(if ($null -ne $windowsExpiry) { $windowsExpiry } else { $legacyExpiry })
+            $result.ErrorMessage = "LAPS ist fuer $($result.ComputerName) aktiv, das Passwort ist fuer Ihr Konto aber nicht lesbar (fehlende Leseberechtigung, siehe Set-LapsADReadPasswordPermission)."
+        }
+        else {
+            $result.ErrorMessage = "Fuer $($result.ComputerName) ist kein LAPS-Passwort im AD gespeichert (LAPS-Richtlinie nicht aktiv oder Geraet hat noch kein Passwort gemeldet)."
+        }
+    }
+    catch {
+        $result.ErrorMessage = "AD-Abfrage fehlgeschlagen: $($_.Exception.Message)"
+    }
+
+    return $result
 }
 
 function Get-LapsPasswordEx {
@@ -501,125 +698,123 @@ function Get-LapsPasswordEx {
         Source = $null
         DecryptionStatus = $null
     }
-    
-    try {
-        # Versuche Windows LAPS mit AsPlainText (entschlüsselt automatisch wenn Berechtigung vorhanden)
-        # Ohne IncludeHistory, da hier nur der aktuelle Wert benötigt wird.
-        if ([string]::IsNullOrWhiteSpace($Domain)) {
-            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -AsPlainText -ErrorAction Stop -WarningAction SilentlyContinue
-        } else {
-            $pwdInfo = Get-LapsADPassword -Identity $ComputerName -Domain $Domain -AsPlainText -ErrorAction Stop -WarningAction SilentlyContinue
-        }
-        
-        # Prüfe ob Passwort-Daten vorhanden sind
-        if ($null -eq $pwdInfo) {
-            $result.ErrorMessage = "Keine Passwort-Daten verfügbar."
-            Write-Log "Keine LAPS Passwort-Daten für $ComputerName gefunden." -Level "Warning"
-            return $result
-        }
+    $notes = New-Object System.Collections.Generic.List[string]
 
-        $source = if ($pwdInfo.PSObject.Properties['Source']) { [string]$pwdInfo.Source } else { "" }
-        $decryptionStatus = if ($pwdInfo.PSObject.Properties['DecryptionStatus']) { [string]$pwdInfo.DecryptionStatus } else { "" }
-        $result.Source = $source
-        $result.DecryptionStatus = $decryptionStatus
+    # 1) Windows LAPS (liest auch Legacy-LAPS-Attribute und entschlüsselt, sofern berechtigt)
+    if (Get-Command -Name Get-LapsADPassword -ErrorAction SilentlyContinue) {
+        try {
+            $lapsParams = @{ Identity = $ComputerName; AsPlainText = $true; ErrorAction = 'Stop'; WarningAction = 'SilentlyContinue' }
+            if (-not [string]::IsNullOrWhiteSpace($Domain)) { $lapsParams.Domain = $Domain }
+            # Ohne IncludeHistory, da hier nur der aktuelle Wert benötigt wird.
+            $pwdInfo = Get-LapsADPassword @lapsParams | Select-Object -First 1
 
-        # Falls Entschlüsselung laut Ergebnis nicht erlaubt/fehlerhaft ist, sauber melden
-        if (($null -eq $pwdInfo.Password -or [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)) -and
-            -not [string]::IsNullOrWhiteSpace($decryptionStatus) -and
-            $decryptionStatus -notin @("Success", "NotApplicable")) {
-            $result.IsEncrypted = $true
-            $result.ErrorMessage = "Passwort kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)."
-            Write-Log "LAPS Passwort für $ComputerName kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)." -Level "Warning"
-            return $result
-        }
-        
-        # Validiere die Passwort-Daten
-        if ($null -eq $pwdInfo.Password -or [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)) {
-            $result.ErrorMessage = "Passwort-Daten enthalten kein Passwort."
-            Write-Log "LAPS Passwort-Daten für $ComputerName sind unvollständig (kein Passwort)." -Level "Warning"
-            return $result
-        }
-        
-        # Erfolgreicher Abruf
-        $result.Success = $true
-        if ($pwdInfo.Password -is [System.Security.SecureString]) {
-            $result.Password = $pwdInfo.Password
-        }
-        else {
-            $result.Password = ConvertTo-SecureString ([string]$pwdInfo.Password) -AsPlainText -Force
-        }
-        $result.ComputerName = if ($null -ne $pwdInfo.ComputerName) { $pwdInfo.ComputerName } else { $ComputerName }
-        $result.UserName = if ($null -ne $pwdInfo.Account -and -not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $pwdInfo.Account } else { "Administrator" }
-        $result.PasswordExpiresTimestamp = if ($pwdInfo.PSObject.Properties['ExpirationTimestamp']) { $pwdInfo.ExpirationTimestamp } else { $null }
-        $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime'] -and $pwdInfo.PasswordUpdateTime) { $pwdInfo.PasswordUpdateTime } else { $null }
-
-        if ($source -like "Legacy*") {
-            $result.LapsVersion = "Legacy LAPS (Windows Emulation)"
-            if ([string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) {
-                $result.UserName = "N/A (Legacy)"
+            if ($null -eq $pwdInfo) {
+                $notes.Add("Windows LAPS: keine Passwortdaten.")
             }
-        }
-        elseif ($source -like "Encrypted*" -or $source -like "Cleartext*") {
-            $result.LapsVersion = "Windows LAPS"
-        }
-        else {
-            $result.LapsVersion = if ($result.PasswordLastSetTimestamp) { "Windows LAPS" } else { "Unbekannt/Legacy" }
-        }
+            else {
+                $source = if ($pwdInfo.PSObject.Properties['Source']) { [string]$pwdInfo.Source } else { "" }
+                $decryptionStatus = if ($pwdInfo.PSObject.Properties['DecryptionStatus']) { [string]$pwdInfo.DecryptionStatus } else { "" }
+                $result.Source = $source
+                $result.DecryptionStatus = $decryptionStatus
+                $hasPassword = $null -ne $pwdInfo.Password -and -not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Password)
 
-        Write-Log "LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
-    }
-    catch {
-        $errorMsg = $_.Exception.Message
-        
-        # Prüfe auf Verschlüsselungsfehler (fehlende Berechtigungen zur Entschlüsselung)
-        if ($errorMsg -match "Deserialisieren|EncryptedPasswordAttributeRaw|Unerwartetes Zeichen") {
-            $result.IsEncrypted = $true
-            $result.ErrorMessage = "Passwort ist verschlüsselt. Sie haben keine Berechtigung zur Entschlüsselung oder der Entschlüsselungsschlüssel fehlt."
-            Write-Log "LAPS Passwort für $ComputerName ist verschlüsselt - fehlende Entschlüsselungsberechtigung." -Level "Warning"
-            return $result
-        }
-        # Prüfe auf spezifische Fehler
-        elseif ($errorMsg -match "computer in AD") {
-            $result.ErrorMessage = "Computer nicht im Active Directory gefunden."
-            Write-Log "Computer $ComputerName nicht im AD gefunden." -Level "Warning"
-        }
-        elseif ($errorMsg -match "run on a AD domain-joined machine") {
-            $result.ErrorMessage = "Dieses Programm muss auf einem AD-verbundenen Computer ausgeführt werden."
-            Write-Log "Programm muss auf AD-verbundenem Computer laufen." -Level "Error"
-        }
-        elseif ($errorMsg -match "Access is denied|Zugriff verweigert") {
-            $result.ErrorMessage = "Zugriff verweigert. Überprüfen Sie Ihre Berechtigungen."
-            Write-Log "Zugriff auf LAPS Passwort für $ComputerName verweigert." -Level "Warning"
-        }
-        else {
-            # Generischer Fehler - versuche Legacy LAPS als Fallback (nur ohne Domain)
-            if ([string]::IsNullOrWhiteSpace($Domain)) {
-                try {
-                    # Prüfe ob Legacy LAPS Cmdlet verfügbar ist
-                    if (Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue) {
-                        $legacyPwd = Get-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop
-                        if ($null -ne $legacyPwd -and $null -ne $legacyPwd.Password) {
-                            $result.Success = $true
-                            $result.Password = ConvertTo-SecureString $legacyPwd.Password -AsPlainText -Force
-                            $result.UserName = "Administrator"
-                            $result.PasswordExpiresTimestamp = $legacyPwd.ExpirationTimestamp
-                            $result.PasswordLastSetTimestamp = $null
-                            $result.LapsVersion = "Legacy LAPS (AdmPwd)"
-                            Write-Log "Legacy LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
-                            return $result
-                        }
+                if ($hasPassword) {
+                    $result.Success = $true
+                    $result.Password = if ($pwdInfo.Password -is [System.Security.SecureString]) { $pwdInfo.Password } else { ConvertTo-LapsSecureString ([string]$pwdInfo.Password) }
+                    $result.ComputerName = if ($null -ne $pwdInfo.ComputerName) { $pwdInfo.ComputerName } else { $ComputerName }
+                    $result.UserName = if (-not [string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $pwdInfo.Account } else { "Administrator" }
+                    $result.PasswordExpiresTimestamp = if ($pwdInfo.PSObject.Properties['ExpirationTimestamp']) { $pwdInfo.ExpirationTimestamp } else { $null }
+                    $result.PasswordLastSetTimestamp = if ($pwdInfo.PSObject.Properties['PasswordUpdateTime'] -and $pwdInfo.PasswordUpdateTime) { $pwdInfo.PasswordUpdateTime } else { $null }
+
+                    if ($source -like "Legacy*") {
+                        $result.LapsVersion = "Legacy LAPS (ueber Windows LAPS gelesen)"
+                        if ([string]::IsNullOrWhiteSpace([string]$pwdInfo.Account)) { $result.UserName = "N/A (Legacy LAPS)" }
                     }
+                    elseif ($source -like "Encrypted*") { $result.LapsVersion = "Windows LAPS (verschluesselt)" }
+                    elseif ($source -like "Cleartext*") { $result.LapsVersion = "Windows LAPS (unverschluesselt)" }
+                    else { $result.LapsVersion = "Windows LAPS" }
+
+                    Write-Log "LAPS Passwort für $ComputerName erfolgreich abgerufen ($($result.LapsVersion))." -Level "Info"
+                    return $result
                 }
-                catch {
-                    Write-Log "Legacy LAPS Fallback fehlgeschlagen für $ComputerName : $($_.Exception.Message)" -Level "Debug"
+
+                if (-not [string]::IsNullOrWhiteSpace($decryptionStatus) -and $decryptionStatus -notin @("Success", "NotApplicable")) {
+                    # Verschlüsseltes Passwort vorhanden, aber keine Entschlüsselungsberechtigung -> eindeutiges Ergebnis
+                    $result.IsEncrypted = $true
+                    $result.ErrorMessage = "Passwort kann nicht entschluesselt werden (DecryptionStatus: $decryptionStatus). Berechtigung ueber 'ADPasswordEncryptionPrincipal' erforderlich."
+                    Write-Log "LAPS Passwort für $ComputerName kann nicht entschlüsselt werden (DecryptionStatus: $decryptionStatus)." -Level "Warning"
+                    return $result
                 }
+
+                $notes.Add("Windows LAPS: kein Passwort gespeichert$(if ($source) { " (Source: $source)" }).")
             }
-            
-            $result.ErrorMessage = $errorMsg
-            Write-Log "Fehler beim Abrufen des LAPS Passworts für $ComputerName : $errorMsg" -Level "Error"
+        }
+        catch {
+            $errorMsg = $_.Exception.Message
+            if ($errorMsg -match "Deserialisieren|EncryptedPasswordAttributeRaw|Unerwartetes Zeichen|decrypt") {
+                $result.IsEncrypted = $true
+                $result.ErrorMessage = "Passwort ist verschluesselt. Sie haben keine Berechtigung zur Entschluesselung oder der Entschluesselungsschluessel fehlt."
+                Write-Log "LAPS Passwort für $ComputerName ist verschlüsselt - fehlende Entschlüsselungsberechtigung." -Level "Warning"
+                return $result
+            }
+            elseif ($errorMsg -match "computer in AD|find an object with identity|Objekt mit der Identit") {
+                $result.ErrorMessage = "Computer '$ComputerName' wurde im Active Directory nicht gefunden."
+                Write-Log "Computer $ComputerName nicht im AD gefunden." -Level "Warning"
+                return $result
+            }
+            elseif ($errorMsg -match "Access is denied|Zugriff verweigert") {
+                $notes.Add("Windows LAPS: Zugriff verweigert.")
+            }
+            else {
+                $notes.Add("Windows LAPS: $errorMsg")
+            }
         }
     }
-    
+    else {
+        $notes.Add("Windows-LAPS-Modul nicht verfuegbar.")
+    }
+
+    # 2) Legacy LAPS Cmdlet (AdmPwd.PS, ohne Domain-Parameter)
+    if ([string]::IsNullOrWhiteSpace($Domain) -and (Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue)) {
+        try {
+            $legacyPwd = Get-AdmPwdPassword -ComputerName $ComputerName -ErrorAction Stop | Select-Object -First 1
+            if ($null -ne $legacyPwd -and -not [string]::IsNullOrWhiteSpace([string]$legacyPwd.Password)) {
+                $result.Success = $true
+                $result.Password = ConvertTo-LapsSecureString ([string]$legacyPwd.Password)
+                $result.UserName = "N/A (Legacy LAPS)"
+                $result.PasswordExpiresTimestamp = $legacyPwd.ExpirationTimestamp
+                $result.PasswordLastSetTimestamp = $null
+                $result.LapsVersion = "Legacy LAPS (AdmPwd)"
+                Write-Log "Legacy LAPS Passwort für $ComputerName erfolgreich abgerufen." -Level "Info"
+                return $result
+            }
+            $notes.Add("Legacy LAPS: kein Passwort lesbar.")
+        }
+        catch {
+            $notes.Add("Legacy LAPS: $($_.Exception.Message)")
+        }
+    }
+
+    # 3) Direktes Lesen der AD-Attribute (funktioniert auch ohne LAPS-Module, nur mit RSAT)
+    if (Get-Command -Name Get-ADComputer -ErrorAction SilentlyContinue) {
+        $adResult = Get-LapsPasswordFromAdAttribute -ComputerName $ComputerName -Domain $Domain
+        if ($adResult.Success) {
+            Write-Log "LAPS Passwort für $ComputerName über AD-Attribute abgerufen ($($adResult.LapsVersion))." -Level "Info"
+            return $adResult
+        }
+        if ($adResult.IsEncrypted) {
+            Write-Log "LAPS Passwort für $ComputerName ist verschlüsselt und kann ohne Windows-LAPS-Modul nicht entschlüsselt werden." -Level "Warning"
+            return $adResult
+        }
+        # Die AD-Auswertung liefert die aussagekräftigste Ursache -> zuerst anzeigen
+        $notes.Insert(0, $adResult.ErrorMessage)
+    }
+    else {
+        $notes.Add("ActiveDirectory-Modul nicht verfuegbar.")
+    }
+
+    $result.ErrorMessage = (@($notes | Where-Object { $_ } | Select-Object -Unique)) -join " | "
+    Write-Log "LAPS Passwort für $ComputerName nicht verfügbar: $($result.ErrorMessage)" -Level "Warning"
     return $result
 }
 
@@ -696,11 +891,37 @@ function Reset-LapsPasswordEx {
             return $result
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($Domain)) {
-            throw "Set-LapsADPasswordExpirationTime ist nicht verfügbar und Legacy LAPS unterstützt keinen Domain-Parameter beim Reset."
+        # 4) Ohne LAPS-Module: Ablaufzeit direkt am Computerobjekt setzen (benötigt Schreibrecht auf das
+        #    Ablaufzeit-Attribut, entspricht der Reset-Berechtigung von Windows LAPS bzw. Legacy LAPS)
+        if (Get-Command -Name Set-ADComputer -ErrorAction SilentlyContinue) {
+            $adParams = @{}
+            if (-not [string]::IsNullOrWhiteSpace($Domain)) { $adParams.Server = $Domain }
+            $attributes = @(Get-LapsSchemaAttribute -Domain $Domain | Where-Object { $_ -in @('msLAPS-PasswordExpirationTime', 'ms-Mcs-AdmPwdExpirationTime') })
+            if ($attributes.Count -eq 0) {
+                throw "Das AD-Schema enthaelt keine LAPS-Attribute."
+            }
+
+            $identity = ($ComputerName.Trim() -split '\.')[0]
+            $computer = Get-ADComputer -Identity $identity -Properties $attributes @adParams -ErrorAction Stop
+            $replace = @{}
+            foreach ($attribute in $attributes) {
+                if ($null -ne $computer.$attribute -and -not [string]::IsNullOrWhiteSpace([string]$computer.$attribute)) {
+                    $replace[$attribute] = [int64]$effectiveTime.ToFileTimeUtc()
+                }
+            }
+            if ($replace.Count -eq 0) {
+                throw "Fuer $($computer.Name) ist keine LAPS-Ablaufzeit im AD gespeichert (LAPS nicht aktiv oder keine Leseberechtigung)."
+            }
+
+            Set-ADComputer -Identity $computer.DistinguishedName -Replace $replace @adParams -ErrorAction Stop
+            $result.Success = $true
+            $result.NewExpirationTime = $effectiveTime
+            $result.LapsVersion = if ($replace.ContainsKey('msLAPS-PasswordExpirationTime')) { "Windows LAPS (AD-Attribut)" } else { "Legacy LAPS (AD-Attribut)" }
+            Write-Log "LAPS-Ablaufzeit für $($computer.Name) direkt im AD gesetzt ($($replace.Keys -join ', '))." -Level "Info"
+            return $result
         }
 
-        throw "Weder Set-LapsADPasswordExpirationTime noch Reset-AdmPwdPassword sind verfügbar."
+        throw "Weder Set-LapsADPasswordExpirationTime, Reset-AdmPwdPassword noch das ActiveDirectory-Modul sind verfuegbar."
     }
     catch {
         $result.ErrorMessage = $_.Exception.Message
@@ -708,6 +929,15 @@ function Reset-LapsPasswordEx {
     }
     
     return $result
+}
+
+# Baut aus dem abgerufenen Klartext-Passwort einen SecureString (nur für die interne Weitergabe)
+function ConvertTo-LapsSecureString {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$PlainText)
+    $secure = New-Object System.Security.SecureString
+    foreach ($char in $PlainText.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+    return $secure
 }
 
 function Convert-SecureStringToPlainText {
@@ -759,8 +989,6 @@ public class ProcessDPI {
     if (-not $appName) { $appName = "easyLAPS" }
     $fontFamily     = $script:BrandingGUI.FontFamily
     if (-not $fontFamily) { $fontFamily = "Segoe UI" }
-    $headerLogoPath = $script:BrandingGUI.HeaderLogo
-    $clickURL       = $script:BrandingGUI.HeaderLogoURL
 
     $scriptVersion = $script:ScriptInfo.ScriptVersion
     $lastUpdate    = $script:ScriptInfo.LastUpdate
@@ -771,11 +999,16 @@ public class ProcessDPI {
         $footerText += " | $webseiteInfo" 
     }
 
+    # Werte für die XAML-Einbettung XML-sicher maskieren
+    $appName    = [System.Security.SecurityElement]::Escape($appName)
+    $fontFamily = [System.Security.SecurityElement]::Escape($fontFamily)
+    $footerText = [System.Security.SecurityElement]::Escape($footerText)
+
     # (2) XAML Definition für die GUI
     $XAML = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="$appName" Height="940" Width="1200" MinHeight="600" MinWidth="800"
+    Title="$appName" Height="860" Width="1200" MinHeight="700" MinWidth="1000"
         WindowStartupLocation="CenterScreen" Background="#FFFFFF" FontFamily="$fontFamily" FontSize="12">
     <Window.Resources>
         <!-- Modern Button Style -->
@@ -880,7 +1113,6 @@ public class ProcessDPI {
                 <TextBlock Text="$appName" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" DockPanel.Dock="Left" Foreground="#e2e2e2"/>
                 <TextBlock Name="lblVersion" Text="v$scriptVersion" FontSize="12" Margin="10,0,0,0" VerticalAlignment="Center" DockPanel.Dock="Left" Foreground="#d0e8ff"/>
                 <TextBlock Name="lblModuleStatus" Text="" FontSize="12" Margin="10,0,0,0" VerticalAlignment="Center" DockPanel.Dock="Left" Foreground="#d0e8ff"/>
-                <Image Name="imgLogo" Source="$headerLogoPath" MaxHeight="35" MaxWidth="140" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="10,0,0,0" Cursor="Hand" DockPanel.Dock="Right"/>
             </DockPanel>
         </Border>
 
@@ -893,23 +1125,33 @@ public class ProcessDPI {
 
             <!-- AD Computer and Actions -->
             <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,5,0">
-                <DockPanel>
+                <DockPanel LastChildFill="True">
                     <StackPanel DockPanel.Dock="Top" Orientation="Vertical" Margin="0,0,0,10">
                         <DockPanel Margin="0,0,0,5">
-                            <TextBlock Text="Computer name:" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="#1C1C1C"/>
-                            <TextBox Name="txtComputerName" Width="200" Height="30" VerticalContentAlignment="Center"/>
-                            <Button Name="btnRefreshAdList" Content="Load AD List" Margin="10,0,0,0" Padding="10,5" Height="30" DockPanel.Dock="Right" Style="{StaticResource ModernButton}"/>
+                            <TextBlock Text="Computer name:" Width="95" VerticalAlignment="Center" DockPanel.Dock="Left" Foreground="#1C1C1C"/>
+                            <Button Name="btnRefreshAdList" Content="Load AD List" Margin="10,0,0,0" Padding="10,5" Height="30" DockPanel.Dock="Right" ToolTip="Loads all computer objects from AD (F5)" Style="{StaticResource ModernButton}"/>
+                            <TextBox Name="txtComputerName" Height="30" VerticalContentAlignment="Center" ToolTip="Computer name (Enter = show password)"/>
                         </DockPanel>
                         <DockPanel Margin="0,0,0,5">
-                            <TextBlock Text="Filter (Name):" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="#1C1C1C"/>
+                            <TextBlock Text="Filter (Name):" Width="95" VerticalAlignment="Center" DockPanel.Dock="Left" Foreground="#1C1C1C"/>
                             <TextBox Name="txtFilter" Height="30" VerticalContentAlignment="Center" ToolTip="Filtert die AD-Liste (Ctrl+F)"/>
                         </DockPanel>
                     </StackPanel>
 
-                    <ListBox Name="lstAdComputers" Margin="0,0,0,10" DockPanel.Dock="Top" Height="427" SelectionMode="Single" BorderBrush="#BFBFBF" BorderThickness="1"/>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Vertical" Margin="0,10,0,0">
+                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,5">
+                            <Button Name="btnGetLapsPassword" Content="Show Password" Width="130" Height="30" Margin="0,0,10,5" ToolTip="Shows the LAPS password (Ctrl+G, Enter, double-click)" Style="{StaticResource ModernButton}"/>
+                            <Button Name="btnResetLapsPassword" Content="Reset Password" Width="130" Height="30" Margin="0,0,10,5" ToolTip="Resets the LAPS password (Ctrl+R)" Style="{StaticResource ModernButton}"/>
+                            <Button Name="btnCopyPassword" Content="Copy to Clipboard" Width="130" Height="30" Margin="0,0,0,5" ToolTip="Copies the password to clipboard, cleared automatically (Ctrl+C)" Style="{StaticResource ModernButton}"/>
+                        </WrapPanel>
+                        <WrapPanel Orientation="Horizontal">
+                            <Button Name="btnExportSelected" Content="Export Selected" Width="130" Height="30" Margin="0,0,10,5" ToolTip="Export selected computer to CSV" Style="{StaticResource ModernButton}"/>
+                            <Button Name="btnExportAll" Content="Export All" Width="130" Height="30" Margin="0,0,10,5" ToolTip="Export all listed computers to CSV" Style="{StaticResource ModernButton}"/>
+                            <Button Name="btnRotateAll" Content="Rotate All" Width="130" Height="30" Margin="0,0,0,5" ToolTip="Rotate passwords for all listed computers" Style="{StaticResource ModernButton}"/>
+                        </WrapPanel>
+                    </StackPanel>
 
-                    <TextBlock Text="LAPS Password Details:" FontWeight="SemiBold" Margin="0,10,0,5" DockPanel.Dock="Top" Foreground="#1C1C1C"/>
-                    <Grid DockPanel.Dock="Top">
+                    <Grid DockPanel.Dock="Bottom">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
@@ -924,7 +1166,7 @@ public class ProcessDPI {
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Username:" Margin="0,0,5,5" VerticalAlignment="Center" Foreground="#505050"/>
                         <TextBox Name="txtLapsUser" Grid.Row="0" Grid.Column="1" IsReadOnly="True" Height="30" VerticalContentAlignment="Center" Margin="0,0,0,5"/>
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="Password:" Margin="0,0,5,5" VerticalAlignment="Center" Foreground="#505050"/>
-                        <TextBox Name="txtLapsPasswordDisplay" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Height="30" VerticalContentAlignment="Center" Margin="0,0,0,5"/>
+                        <TextBox Name="txtLapsPasswordDisplay" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Height="30" VerticalContentAlignment="Center" Margin="0,0,0,5" FontFamily="Consolas"/>
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Expiration date:" Margin="0,0,5,5" VerticalAlignment="Center" Foreground="#505050"/>
                         <TextBox Name="txtPasswordExpiry" Grid.Row="2" Grid.Column="1" IsReadOnly="True" Height="30" VerticalContentAlignment="Center" Margin="0,0,0,5"/>
                         <TextBlock Grid.Row="3" Grid.Column="0" Text="Last change:" Margin="0,0,5,5" VerticalAlignment="Center" Foreground="#505050"/>
@@ -933,56 +1175,48 @@ public class ProcessDPI {
                         <TextBox Name="txtLapsVersion" Grid.Row="4" Grid.Column="1" IsReadOnly="True" Height="30" VerticalContentAlignment="Center" Margin="0,0,0,5"/>
                     </Grid>
 
-                    <StackPanel DockPanel.Dock="Bottom" Orientation="Vertical" Margin="0,10,0,0">
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5" Height="35">
-                            <Button Name="btnGetLapsPassword" Content="Show Password" Width="130" Height="30" Margin="0,0,10,0" ToolTip="Shows the LAPS password (Ctrl+G)" Style="{StaticResource ModernButton}"/>
-                            <Button Name="btnResetLapsPassword" Content="Reset Password" Width="130" Height="30" Margin="0,0,10,0" ToolTip="Resets the LAPS password (Ctrl+R)" Style="{StaticResource ModernButton}"/>
-                            <Button Name="btnCopyPassword" Content="Copy to Clipboard" Width="130" Height="30" ToolTip="Copies the password to clipboard (Ctrl+C)" Style="{StaticResource ModernButton}"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,0" Height="35">
-                            <Button Name="btnExportSelected" Content="Export Selected" Width="130" Height="30" Margin="0,0,10,0" ToolTip="Export selected computer to CSV" Style="{StaticResource ModernButton}"/>
-                            <Button Name="btnExportAll" Content="Export All" Width="130" Height="30" Margin="0,0,10,0" ToolTip="Export all computers to CSV" Style="{StaticResource ModernButton}"/>
-                            <Button Name="btnRotateAll" Content="Rotate All" Width="130" Height="30" ToolTip="Rotate passwords for all computers" Style="{StaticResource ModernButton}"/>
-                        </StackPanel>
-                    </StackPanel>
+                    <TextBlock Text="LAPS Password Details:" FontWeight="SemiBold" Margin="0,10,0,5" DockPanel.Dock="Bottom" Foreground="#1C1C1C"/>
+
+                    <ListBox Name="lstAdComputers" SelectionMode="Single" BorderBrush="#BFBFBF" BorderThickness="1" ToolTip="Auswahl übernimmt den Namen, Doppelklick zeigt das Passwort"/>
                 </DockPanel>
             </Border>
 
             <!-- LAPS Details and Status -->
             <Border Grid.Column="1" Style="{StaticResource Card}" Margin="5,0,0,0">
-                <DockPanel>
-                    <TextBlock Text="LAPS Client Status and Policies" DockPanel.Dock="Top" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10" Foreground="#1C1C1C"/>
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="75,0,0,10">
-                        <Button Name="btnCheckLapsStatus" Content="Check Status" Width="130" Height="30" HorizontalAlignment="Left" Margin="0,0,10,0" ToolTip="Checks the LAPS status (Ctrl+P)" Style="{StaticResource ModernButton}"/>
-                        <Button Name="btnRunPolicyProcessing" Content="Run Policy (local)" Width="150" Height="30" HorizontalAlignment="Left" Margin="0,0,10,0" ToolTip="Startet Invoke-LapsPolicyProcessing auf dem lokalen System (Ctrl+I)" Style="{StaticResource ModernButton}"/>
-                        <Button Name="btnRunDiagnostics" Content="Diagnose" Width="130" Height="30" HorizontalAlignment="Left" ToolTip="Sammelt LAPS-Diagnosedaten und öffnet die ZIP-Datei" Style="{StaticResource ModernButton}"/>
-                    </StackPanel>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="160"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
 
-                    <Grid DockPanel.Dock="Top">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Row="0" Text="LAPS Client Status and Policies (local system)" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10" Foreground="#1C1C1C"/>
 
-                        <TextBlock Grid.Row="0" Grid.Column="1" Text="LAPS installed:" VerticalAlignment="Top" Margin="1,1,511,0" Foreground="#505050" Grid.ColumnSpan="2"/>
-                        <Ellipse Name="ellipseLapsInstalled" Grid.Column="2" Width="16" Height="16" Fill="Gray" Stroke="Black" StrokeThickness="0.5" VerticalAlignment="Center" Margin="84,0,495,0"/>
-                        <TextBlock Name="lblLapsInstalledStatus" Grid.Column="2" Text="Not checked" VerticalAlignment="Center" Margin="117,0,307,0" Foreground="#1C1C1C"/>
+                    <WrapPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+                        <Button Name="btnCheckLapsStatus" Content="Check Status" Width="130" Height="30" Margin="0,0,10,5" ToolTip="Checks the local LAPS status (Ctrl+P)" Style="{StaticResource ModernButton}"/>
+                        <Button Name="btnRunPolicyProcessing" Content="Run Policy (local)" Width="150" Height="30" Margin="0,0,10,5" ToolTip="Startet Invoke-LapsPolicyProcessing auf dem lokalen System (Ctrl+I)" Style="{StaticResource ModernButton}"/>
+                        <Button Name="btnRunDiagnostics" Content="Diagnose" Width="130" Height="30" Margin="0,0,0,5" ToolTip="Sammelt LAPS-Diagnosedaten und öffnet die ZIP-Datei" Style="{StaticResource ModernButton}"/>
+                    </WrapPanel>
 
-                        <TextBlock Grid.Column="2" Text="LAPS GPO active:" VerticalAlignment="Center" Margin="297,0,200,0" Foreground="#505050"/>
-                        <Ellipse Name="ellipseGpoStatus" Grid.Column="2" Width="16" Height="16" Fill="Gray" Stroke="Black" StrokeThickness="0.5" VerticalAlignment="Center" Margin="395,0,184,0" RenderTransformOrigin="29.087,-0.851"/>
-                        <TextBlock Name="lblGpoStatus" Grid.Column="2" Text="Not checked" VerticalAlignment="Center" Margin="429,0,0,0" Foreground="#1C1C1C"/>
+                    <WrapPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="LAPS installed:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#505050"/>
+                        <Ellipse Name="ellipseLapsInstalled" Width="16" Height="16" Fill="Gray" Stroke="Black" StrokeThickness="0.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Name="lblLapsInstalledStatus" Text="Not checked" VerticalAlignment="Center" Margin="0,0,30,0" Foreground="#1C1C1C"/>
+                        <TextBlock Text="LAPS policy active:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#505050"/>
+                        <Ellipse Name="ellipseGpoStatus" Width="16" Height="16" Fill="Gray" Stroke="Black" StrokeThickness="0.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Name="lblGpoStatus" Text="Not checked" VerticalAlignment="Center" Foreground="#1C1C1C"/>
+                    </WrapPanel>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Policy details:" VerticalAlignment="Top" Margin="0,10,5,0" Foreground="#505050"/>
-                        <TextBox Name="txtPolicyDetails" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" IsReadOnly="True" Margin="0,10,0,-236" FontFamily="Consolas" FontSize="11" Style="{StaticResource ModernTextBox}"/>
-                    </Grid>
-                    <TextBox Name="txtStatus" Text="Ready." DockPanel.Dock="Bottom" Margin="0,240,0,0" FontStyle="Italic" FontSize="10" IsReadOnly="True" Height="390" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Style="{StaticResource ModernTextBox}" Background="#F8F8F8"/>
-                </DockPanel>
+                    <TextBlock Grid.Row="3" Text="Policy details:" Margin="0,0,0,5" Foreground="#505050"/>
+                    <TextBox Name="txtPolicyDetails" Grid.Row="4" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" IsReadOnly="True" Margin="0,0,0,10" FontFamily="Consolas" FontSize="11" Style="{StaticResource ModernTextBox}"/>
+
+                    <TextBlock Grid.Row="5" Text="Status:" Margin="0,0,0,5" Foreground="#505050"/>
+                    <TextBox Name="txtStatus" Grid.Row="6" Text="Ready." FontStyle="Italic" FontSize="10" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Style="{StaticResource ModernTextBox}" Background="#F8F8F8"/>
+                </Grid>
             </Border>
         </Grid>
 
@@ -1021,7 +1255,7 @@ public class ProcessDPI {
             "txtPasswordLastSet", "txtLapsVersion", "btnGetLapsPassword", "btnResetLapsPassword", "btnCopyPassword", "btnCheckLapsStatus", "btnRunPolicyProcessing", "btnRunDiagnostics",
       "btnExportSelected", "btnExportAll", "btnRotateAll",
       "ellipseLapsInstalled", "lblLapsInstalledStatus", "ellipseGpoStatus", "lblGpoStatus", "txtPolicyDetails", 
-      "txtStatus", "imgLogo", "lblFooter", "lblVersion", "lblModuleStatus") | ForEach-Object {
+      "txtStatus", "lblFooter", "lblVersion", "lblModuleStatus") | ForEach-Object {
         $controls[$_] = $window.FindName($_)
     }
 
@@ -1072,23 +1306,17 @@ public class ProcessDPI {
             $e.Handled = $true
         }
         
-        # Strg+C für Passwort kopieren (nur wenn kein Text markiert ist)
+        # Strg+C für Passwort kopieren (nur wenn in einem Textfeld kein Text markiert ist)
         if ($e.Key -eq 'C' -and $e.KeyboardDevice.Modifiers -eq 'Control') {
-            $controls.btnCopyPassword.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
-            $e.Handled = $true
+            $focusedElement = [System.Windows.Input.Keyboard]::FocusedElement
+            $hasTextSelection = ($focusedElement -is [System.Windows.Controls.TextBox]) -and ($focusedElement.SelectionLength -gt 0)
+            if (-not $hasTextSelection) {
+                $controls.btnCopyPassword.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+                $e.Handled = $true
+            }
         }
     })
     
-    # Logo Klick (falls URL in INI definiert)
-    if ($controls.imgLogo -and $clickURL) {
-        $controls.imgLogo.Add_MouseUp({
-            param($source, $e)
-            if ($e.ChangedButton -eq 'Left') { Open-URLInBrowser $clickURL }
-        })
-    }
-    if (-not (Test-Path $headerLogoPath)) {
-        $controls.imgLogo.Visibility = 'Collapsed'
-    }
 
     #region [4.0 | Statusanzeige und Hilfsfunktionen]
 
@@ -1112,6 +1340,7 @@ $global:UpdateStatus = {
         } else {
             $controls.txtStatus.Text += "`r`n$entry"
         }
+        $controls.txtStatus.ScrollToEnd()
         # Farblogik
         switch ($Level.ToLower()) {
             "pruefung" { $controls.txtStatus.Foreground = [System.Windows.Media.Brushes]::DarkBlue }
@@ -1138,7 +1367,19 @@ $global:UpdateStatus = {
             return $script:allComputers
         }
         
-        return $script:allComputers | Where-Object { $_ -like "*$filterText*" }
+        $filterPattern = "*$([System.Management.Automation.WildcardPattern]::Escape($filterText))*"
+        return $script:allComputers | Where-Object { $_ -like $filterPattern }
+    }
+
+    # Passwortfelder leeren und zwischengespeichertes Passwort verwerfen
+    $ClearLapsDetails = {
+        param([string]$Placeholder = "")
+        $script:CurrentLapsPassword = $null
+        $controls.txtLapsUser.Text = $Placeholder
+        $controls.txtLapsPasswordDisplay.Text = $Placeholder
+        $controls.txtPasswordExpiry.Text = $Placeholder
+        $controls.txtPasswordLastSet.Text = $Placeholder
+        $controls.txtLapsVersion.Text = $Placeholder
     }
 
     $LoadLapsPasswordForComputer = {
@@ -1152,11 +1393,7 @@ $global:UpdateStatus = {
         }
 
         $controls.txtComputerName.Text = $ComputerName
-        $controls.txtLapsUser.Text = "Lade..."
-        $controls.txtLapsPasswordDisplay.Text = "Lade..."
-        $controls.txtPasswordExpiry.Text = "Lade..."
-        $controls.txtPasswordLastSet.Text = "Lade..."
-        $controls.txtLapsVersion.Text = "Lade..."
+        & $ClearLapsDetails "Lade..."
 
         try {
             & $global:UpdateStatus -IsLapsCheck "Lese LAPS Passwort fuer $ComputerName..."
@@ -1164,6 +1401,7 @@ $global:UpdateStatus = {
 
             if ($passwordInfo.Success) {
                 $plainPassword = Convert-SecureStringToPlainText -SecureString $passwordInfo.Password
+                $script:CurrentLapsPassword = $plainPassword
                 $controls.txtLapsUser.Text = $passwordInfo.UserName
                 $controls.txtLapsPasswordDisplay.Text = $plainPassword
                 $controls.txtPasswordExpiry.Text = if ($passwordInfo.PasswordExpiresTimestamp) { $passwordInfo.PasswordExpiresTimestamp.ToString("g") } else { "N/A" }
@@ -1172,20 +1410,14 @@ $global:UpdateStatus = {
                 & $global:UpdateStatus -IsLapsCheck "LAPS Passwort fuer $ComputerName erfolgreich gelesen." "OK"
             }
             else {
-                $controls.txtLapsUser.Text = "N/A"
+                & $ClearLapsDetails "N/A"
                 $controls.txtLapsPasswordDisplay.Text = "Passwort nicht verfuegbar."
-                $controls.txtPasswordExpiry.Text = "N/A"
-                $controls.txtPasswordLastSet.Text = "N/A"
-                $controls.txtLapsVersion.Text = "N/A"
                 & $global:UpdateStatus -IsLapsCheck "LAPS-Passwort fuer $ComputerName nicht verfuegbar: $($passwordInfo.ErrorMessage)" "Warning"
             }
         }
         catch {
-            $controls.txtLapsUser.Text = "N/A"
+            & $ClearLapsDetails "N/A"
             $controls.txtLapsPasswordDisplay.Text = "LAPS Passwort konnte nicht gelesen werden."
-            $controls.txtPasswordExpiry.Text = "N/A"
-            $controls.txtPasswordLastSet.Text = "N/A"
-            $controls.txtLapsVersion.Text = "N/A"
             & $global:UpdateStatus -IsLapsCheck "Fehler beim Laden der LAPS-Passwort Informationen: $($_.Exception.Message)" "Error"
         }
     }
@@ -1193,10 +1425,10 @@ $global:UpdateStatus = {
     # AD Computerliste laden
     $controls.btnRefreshAdList.Add_Click({
         & $global:UpdateStatus -IsLapsCheck "Lade AD Computerliste..."
+        [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
         try {
-            $script:allComputers = Get-ADComputer -Filter * -Properties Name | Select-Object -ExpandProperty Name | Sort-Object
-            $controls.lstAdComputers.ItemsSource = $script:allComputers
-            if ($script:allComputers) {
+            $script:allComputers = @(Get-ADComputer -Filter * | Select-Object -ExpandProperty Name | Sort-Object)
+            if ($script:allComputers.Count -gt 0) {
                 & $global:UpdateStatus -IsLapsCheck "AD Computerliste geladen ($($script:allComputers.Count) Eintraege)."
             } else {
                 & $global:UpdateStatus -IsLapsCheck "Keine Computer in AD gefunden."
@@ -1205,9 +1437,12 @@ $global:UpdateStatus = {
         catch {
             & $global:UpdateStatus -IsLapsCheck "Fehler beim Laden der AD Computerliste: $($_.Exception.Message)" "Error"
         }
+        finally {
+            [System.Windows.Input.Mouse]::OverrideCursor = $null
+        }
         
         $filterText = if ($controls.txtFilter) { $controls.txtFilter.Text } else { "" }
-        $filteredComputers = & $FilterComputers $filterText
+        $filteredComputers = @(& $FilterComputers $filterText)
         $controls.lstAdComputers.ItemsSource = $filteredComputers
         
         if ([string]::IsNullOrWhiteSpace($filterText)) {
@@ -1220,18 +1455,28 @@ $global:UpdateStatus = {
     if ($controls.txtFilter) {
         $controls.txtFilter.Add_TextChanged({
             $filterText = $controls.txtFilter.Text
-            $controls.lstAdComputers.ItemsSource = & $FilterComputers $filterText
+            $controls.lstAdComputers.ItemsSource = @(& $FilterComputers $filterText)
         })
     }
 
-    # Register event handler for list selection
+    # Listenauswahl übernimmt nur den Computernamen. Das Passwort wird bewusst erst auf
+    # explizite Aktion (Show Password / Enter / Doppelklick) gelesen, damit nicht jede
+    # Navigation in der Liste einen (auditierten) Passwortabruf im AD auslöst.
     $controls.lstAdComputers.Add_SelectionChanged({
-        param($source, $e)
-        
         $selectedComputer = $controls.lstAdComputers.SelectedItem
         if (-not $selectedComputer) { return }
 
-        & $LoadLapsPasswordForComputer $selectedComputer
+        if ($controls.txtComputerName.Text -ne [string]$selectedComputer) {
+            $controls.txtComputerName.Text = [string]$selectedComputer
+            & $ClearLapsDetails ""
+        }
+    })
+
+    $controls.lstAdComputers.Add_MouseDoubleClick({
+        $selectedComputer = $controls.lstAdComputers.SelectedItem
+        if (-not $selectedComputer) { return }
+
+        & $LoadLapsPasswordForComputer ([string]$selectedComputer)
     })
 
     # LAPS Passwort anzeigen
@@ -1276,11 +1521,11 @@ $global:UpdateStatus = {
                         [System.Windows.MessageBoxButton]::OK, 
                         [System.Windows.MessageBoxImage]::Information
                     )
-                    # Clear password fields since the new password cannot be read immediately
-                    $controls.txtLapsUser.Text = ""
-                    $controls.txtLapsPasswordDisplay.Text = "(Passwort wurde zurueckgesetzt)"
-                    $controls.txtPasswordExpiry.Text = ""
-                    $controls.txtPasswordLastSet.Text = $(Get-Date -Format "g")
+                    # Passwortfelder leeren: Das Passwort wurde als abgelaufen markiert, die Rotation
+                    # erfolgt erst beim nächsten LAPS-Policy-Processing auf dem Zielgerät.
+                    & $ClearLapsDetails ""
+                    $controls.txtLapsPasswordDisplay.Text = "(Passwort als abgelaufen markiert - Rotation beim naechsten Policy-Processing)"
+                    $controls.txtPasswordExpiry.Text = if ($resetResult.NewExpirationTime) { $resetResult.NewExpirationTime.ToString("g") } else { "Sofort (abgelaufen)" }
                     $controls.txtLapsVersion.Text = $resetResult.LapsVersion
                 } else {
                     & $global:UpdateStatus -IsLapsCheck "Fehler beim Zuruecksetzen des LAPS-Passworts: $($resetResult.ErrorMessage)" "Error"
@@ -1296,10 +1541,17 @@ $global:UpdateStatus = {
 
     # Passwort kopieren
     $controls.btnCopyPassword.Add_Click({
-        $password = $controls.txtLapsPasswordDisplay.Text
-        if (-not [string]::IsNullOrWhiteSpace($password) -and $password -notmatch "Fehler|gefunden|zurueckgesetzt") {
-            Set-Clipboard -Text $password
-            & $global:UpdateStatus -IsLapsCheck "Passwort in die Zwischenablage kopiert."
+        # Nur ein tatsächlich abgerufenes Passwort kopieren (keine Status-/Platzhaltertexte)
+        $password = $script:CurrentLapsPassword
+        if (-not [string]::IsNullOrEmpty($password)) {
+            try {
+                Set-ClipboardSecret -Text $password
+                $clearHint = if ($script:ClipboardClearSeconds -gt 0) { " Wird in $($script:ClipboardClearSeconds) Sekunden automatisch geleert." } else { "" }
+                & $global:UpdateStatus -IsLapsCheck "Passwort in die Zwischenablage kopiert.$clearHint" "OK"
+            }
+            catch {
+                & $global:UpdateStatus -IsLapsCheck "Fehler beim Kopieren in die Zwischenablage: $($_.Exception.Message)" "Error"
+            }
         } else {
             & $global:UpdateStatus -IsLapsCheck "Kein Passwort zum Kopieren vorhanden." "Warning"
         }
@@ -1308,9 +1560,12 @@ $global:UpdateStatus = {
     # Export Selected Computer
     $controls.btnExportSelected.Add_Click({
         $selectedComputer = $controls.lstAdComputers.SelectedItem
+        if ($null -eq $selectedComputer -and -not [string]::IsNullOrWhiteSpace($controls.txtComputerName.Text)) {
+            $selectedComputer = $controls.txtComputerName.Text.Trim()
+        }
         if ($null -eq $selectedComputer) {
             & $global:UpdateStatus -IsLapsCheck "Kein Computer ausgewählt." "Warning"
-            [System.Windows.MessageBox]::Show("Bitte wählen Sie einen Computer aus der Liste aus.", "Warnung", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+            [System.Windows.MessageBox]::Show("Bitte wählen Sie einen Computer aus der Liste aus oder geben Sie einen Namen ein.", "Warnung", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
             return
         }
 
@@ -1359,9 +1614,11 @@ $global:UpdateStatus = {
             if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
                 & $global:UpdateStatus -IsLapsCheck "Exportiere $($controls.lstAdComputers.Items.Count) Computer..."
                 
+                [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
                 try {
-                    $allComputers = $controls.lstAdComputers.Items | ForEach-Object { $_ }
+                    $allComputers = @($controls.lstAdComputers.Items)
                     $result = Export-LapsPasswordToCsv -FilePath $saveDialog.FileName -ComputerList $allComputers
+                    [System.Windows.Input.Mouse]::OverrideCursor = $null
                     
                     if ($result.Success) {
                         & $global:UpdateStatus -IsLapsCheck "Export erfolgreich: $($result.Count) Computer exportiert" "OK"
@@ -1374,6 +1631,9 @@ $global:UpdateStatus = {
                 catch {
                     & $global:UpdateStatus -IsLapsCheck "Export-Fehler: $($_.Exception.Message)" "Error"
                     [System.Windows.MessageBox]::Show("Fehler beim Export:`n$($_.Exception.Message)", "Fehler", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+                }
+                finally {
+                    [System.Windows.Input.Mouse]::OverrideCursor = $null
                 }
             }
         }
@@ -1392,9 +1652,11 @@ $global:UpdateStatus = {
         if ($confirmResult -eq [System.Windows.MessageBoxResult]::Yes) {
             & $global:UpdateStatus -IsLapsCheck "Rotiere Passwörter für $($controls.lstAdComputers.Items.Count) Computer..."
             
+            [System.Windows.Input.Mouse]::OverrideCursor = [System.Windows.Input.Cursors]::Wait
             try {
-                $allComputers = $controls.lstAdComputers.Items | ForEach-Object { $_ }
+                $allComputers = @($controls.lstAdComputers.Items)
                 $result = Invoke-LapsPasswordRotation -ComputerList $allComputers
+                [System.Windows.Input.Mouse]::OverrideCursor = $null
                 
                 if ($result.Success) {
                     & $global:UpdateStatus -IsLapsCheck "Rotation abgeschlossen: $($result.SuccessCount) erfolgreich, $($result.FailCount) fehlgeschlagen" "OK"
@@ -1421,58 +1683,49 @@ $global:UpdateStatus = {
                 & $global:UpdateStatus -IsLapsCheck "Rotations-Fehler: $($_.Exception.Message)" "Error"
                 [System.Windows.MessageBox]::Show("Fehler bei der Rotation:`n$($_.Exception.Message)", "Fehler", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
             }
+            finally {
+                [System.Windows.Input.Mouse]::OverrideCursor = $null
+            }
         }
     })
 
-    # LAPS Client Status & Richtlinien pruefen
-    $controls.btnCheckLapsStatus.Add_Click({
+    # LAPS-Status des lokalen Systems ermitteln und anzeigen (gemeinsam für Button und Programmstart)
+    $UpdateLapsStatusDisplay = {
         $computer = $env:COMPUTERNAME
         & $global:UpdateStatus -IsLapsCheck "Pruefe LAPS-Status fuer $computer..." "Pruefung"
-        
+
         try {
-            # Pruefe, ob LAPS installiert ist
-            $lapsInstalled = $false
-            $lapsType = ""
-            $winLaps = Get-WmiObject -Class Win32_OptionalFeature -Filter "Name='LAPS.Windows' AND InstallState=1" -ErrorAction SilentlyContinue
-            if ($winLaps) {
-                $lapsInstalled = $true
-                $lapsType = "Windows LAPS"
-            } elseif (Test-Path "C:\Program Files\LAPS\CSE\Admpwd.dll") {
-                $lapsInstalled = $true
-                $lapsType = "Legacy LAPS (Admpwd.dll)"
-            }
-            
-            # Aktualisiere die UI basierend auf dem LAPS-Status
-            if ($lapsInstalled) {
-                $controls.lblLapsInstalledStatus.Text = "$lapsType installiert"
+            $lapsStatus = Get-LocalLapsStatus
+            $details = New-Object System.Collections.Generic.List[string]
+            $details.Add("Systemtyp erkannt: $($lapsStatus.SystemType)")
+
+            if ($lapsStatus.LapsInstalled) {
+                $controls.lblLapsInstalledStatus.Text = "$($lapsStatus.LapsType) installiert"
                 $controls.ellipseLapsInstalled.Fill = [System.Windows.Media.Brushes]::Green
-                & $global:UpdateStatus -IsLapsCheck "$lapsType auf diesem System gefunden. Pruefe GPO..." "Pruefung"
-                
-                # Pruefe GPO-Einstellungen
-                $os = Get-CimInstance -ClassName Win32_OperatingSystem
-                $isServer = $os.ProductType -ne 1
-                $gpoKey = if ($isServer) { "HKLM:\SOFTWARE\Policies\Microsoft Services\AdmPwd" } else { "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdmPwd" }
-                $gpoActive = Test-Path $gpoKey
-                
-                if ($gpoActive) {
-                    $controls.lblGpoStatus.Text = "LAPS GPO aktiv"
-                    $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Green
-                    $controls.txtPolicyDetails.Text = "LAPS ist korrekt konfiguriert.`nGPO-Pfad: $gpoKey"
-                    & $global:UpdateStatus -IsLapsCheck "LAPS GPO auf diesem System gefunden und aktiv." "OK"
-                } else {
-                    $controls.lblGpoStatus.Text = "Keine LAPS GPO gefunden"
-                    $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Red
-                    $controls.txtPolicyDetails.Text = "Keine passende LAPS GPO gefunden.`nBitte konfigurieren Sie die LAPS-Gruppenrichtlinie."
-                    & $global:UpdateStatus -IsLapsCheck "Keine passende LAPS GPO gefunden. Bitte konfigurieren Sie die LAPS-Gruppenrichtlinie." "Warning"
-                }
+                $details.Add("$($lapsStatus.LapsType) ist installiert.")
+                & $global:UpdateStatus -IsLapsCheck "$($lapsStatus.LapsType) auf diesem System gefunden. Pruefe Richtlinien..." "Pruefung"
             } else {
                 $controls.lblLapsInstalledStatus.Text = "Nicht installiert"
                 $controls.ellipseLapsInstalled.Fill = [System.Windows.Media.Brushes]::Red
-                $controls.lblGpoStatus.Text = "Nicht verfügbar"
-                $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Gray
-                $controls.txtPolicyDetails.Text = "LAPS ist auf diesem System nicht installiert.`nBitte installieren Sie LAPS, um fortzufahren."
+                $details.Add("LAPS ist auf diesem System nicht installiert.")
                 & $global:UpdateStatus -IsLapsCheck "LAPS ist auf diesem System nicht installiert." "Warning"
             }
+
+            if ($lapsStatus.PolicyActive) {
+                $controls.lblGpoStatus.Text = "Aktiv ($($lapsStatus.PolicySource))"
+                $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Green
+                $details.Add("Aktive Policy: $($lapsStatus.PolicySource)")
+                $details.Add("Registry: $($lapsStatus.PolicyRoot)")
+                & $global:UpdateStatus -IsLapsCheck "LAPS-Richtlinie aktiv: $($lapsStatus.PolicySource)." "OK"
+            } else {
+                $controls.lblGpoStatus.Text = "Keine LAPS-Richtlinie gefunden"
+                $controls.ellipseGpoStatus.Fill = if ($lapsStatus.LapsInstalled) { [System.Windows.Media.Brushes]::Red } else { [System.Windows.Media.Brushes]::Gray }
+                $details.Add("Keine aktive LAPS-Richtlinie gefunden (CSP, GPO, lokale Konfiguration, Legacy).")
+                $details.Add("Hinweis: https://learn.microsoft.com/windows-server/identity/laps/laps-management-policy-settings")
+                & $global:UpdateStatus -IsLapsCheck "Keine aktive LAPS-Richtlinie gefunden. Bitte LAPS-Richtlinie konfigurieren." "Warning"
+            }
+
+            $controls.txtPolicyDetails.Text = $details -join "`r`n"
         } catch {
             $controls.lblLapsInstalledStatus.Text = "Fehler"
             $controls.ellipseLapsInstalled.Fill = [System.Windows.Media.Brushes]::Red
@@ -1481,6 +1734,11 @@ $global:UpdateStatus = {
             $controls.txtPolicyDetails.Text = "Fehler beim Überprüfen des LAPS-Status: $($_.Exception.Message)"
             & $global:UpdateStatus -IsLapsCheck "Fehler beim Überprüfen des LAPS-Status: $($_.Exception.Message)" "Error"
         }
+    }
+
+    # LAPS Client Status & Richtlinien pruefen
+    $controls.btnCheckLapsStatus.Add_Click({
+        & $UpdateLapsStatusDisplay
     })
 
     # Lokale LAPS-Policy-Verarbeitung anstoßen
@@ -1563,64 +1821,18 @@ $global:UpdateStatus = {
         }
     })
 
-    # Initiale Prüfung beim Programmstart ausführen
-    & $global:UpdateStatus -IsLapsCheck "Pruefe LAPS-Status des lokalen Systems..." "Pruefung"
-    try {
-        $os = Get-CimInstance -ClassName Win32_OperatingSystem
-        $isServer = $os.ProductType -ne 1
-        $systemType = if ($isServer) { "Server" } else { "Client" }
-        $controls.txtPolicyDetails.Text = "Systemtyp erkannt: $systemType"
-        
-        # Initialisierung der Variablen
-        $lapsInstalled = $false
-        $lapsType = ""
-        $winLaps = Get-WmiObject -Class Win32_OptionalFeature -Filter "Name='LAPS.Windows' AND InstallState=1" -ErrorAction SilentlyContinue
-        if ($winLaps) {
-            $lapsInstalled = $true
-            $lapsType = "Windows LAPS"
-        } elseif (Test-Path "C:\Program Files\LAPS\CSE\Admpwd.dll") {
-            $lapsInstalled = $true
-            $lapsType = "Legacy LAPS (Admpwd.dll)"
-        }
-        if ($lapsInstalled) {
-            $controls.lblLapsInstalledStatus.Text = "$lapsType installiert"
-            $controls.ellipseLapsInstalled.Fill = [System.Windows.Media.Brushes]::Green
-            & $global:UpdateStatus -IsLapsCheck "$lapsType auf diesem System gefunden. Pruefe GPO..." "Pruefung"
-            $gpoKey = if ($isServer) { "HKLM:\SOFTWARE\Policies\Microsoft Services\AdmPwd" } else { "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdmPwd" }
-            $gpoActive = Test-Path $gpoKey
-            if ($gpoActive) {
-                $controls.lblGpoStatus.Text = "LAPS GPO aktiv"
-                $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Green
-                $controls.txtPolicyDetails.Text += "`nLAPS GPO wurde gefunden und ist aktiv ($gpoKey)."
-                & $global:UpdateStatus -IsLapsCheck "LAPS GPO auf diesem System gefunden." "OK"
-            } else {
-                $controls.lblGpoStatus.Text = "Keine LAPS GPO gefunden"
-                $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Red
-                $controls.txtPolicyDetails.Text += "`nKeine passende LAPS GPO gefunden. Weitere Infos auf der Microsoft-Webseite."
-                & $global:UpdateStatus -IsLapsCheck "Keine passende LAPS GPO gefunden. Oeffne Microsoft-Webseite..." "Fehler"
-                Start-Process "https://learn.microsoft.com/de-de/windows-server/identity/laps/laps-overview"
-            }
-        } else {
-            $controls.lblLapsInstalledStatus.Text = "Nicht installiert"
-            $controls.ellipseLapsInstalled.Fill = [System.Windows.Media.Brushes]::Red
-            $controls.lblGpoStatus.Text = "Unbekannt"
-            $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Gray
-            $controls.txtPolicyDetails.Text += "`nLAPS ist auf diesem Computer nicht installiert."
-            & $global:UpdateStatus -IsLapsCheck "LAPS ist auf diesem System nicht installiert." "Fehler"
-        }
-    }
-    catch {
-        $controls.lblLapsInstalledStatus.Text = "Fehler"
-        $controls.ellipseLapsInstalled.Fill = [System.Windows.Media.Brushes]::Red
-        $controls.lblGpoStatus.Text = "Fehler"
-        $controls.ellipseGpoStatus.Fill = [System.Windows.Media.Brushes]::Red
-        $controls.txtPolicyDetails.Text = "Fehler"
-        & $global:UpdateStatus -IsLapsCheck "Ausnahme beim Pruefen des LAPS-Status: $($_.Exception.Message)" "Fehler"
-    }
+    # Initiale Prüfung beim Programmstart ausführen (ohne automatisches Öffnen externer Webseiten)
+    & $UpdateLapsStatusDisplay
+
+    # Zwischenablage beim Schließen leeren, falls noch ein kopiertes Passwort enthalten ist
+    $window.Add_Closed({
+        Clear-ClipboardSecret
+        $script:CurrentLapsPassword = $null
+    })
 
     # Update module status label
     if ($ModuleStatus) {
-        $moduleStatusText = "Module: Windows LAPS=$($ModuleStatus.NewModuleAvailable) | Legacy LAPS=$($ModuleStatus.LegacyModuleAvailable)"
+        $moduleStatusText = "Module: Windows LAPS=$($ModuleStatus.NewModuleAvailable) | Legacy LAPS=$($ModuleStatus.LegacyModuleAvailable) | ActiveDirectory=$($ModuleStatus.ADModuleAvailable)"
         $controls.lblModuleStatus.Text = $moduleStatusText
     }
 
@@ -1632,10 +1844,24 @@ $global:UpdateStatus = {
 # Set error action preference for the main script block
 $ErrorActionPreference = "Stop"
 
-# Initialize Global Log File Path
-$global:easyLAPSLogFile = Join-Path -Path $script:ScriptPath -ChildPath "easyLAPS_$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-
 try {
+    # Unter PowerShell 7 (Core) automatisch in Windows PowerShell 5.1 neu starten (WPF/RSAT/LAPS-Module)
+    if ($PSVersionTable.PSEdition -eq 'Core' -and -not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        $winPS = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        if (Test-Path -Path $winPS) {
+            Write-Log "PowerShell $($PSVersionTable.PSVersion) erkannt - Neustart in Windows PowerShell 5.1." -Level "INFO"
+            Start-Process -FilePath $winPS -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", "`"$PSCommandPath`"")
+            exit 0
+        }
+    }
+
+    # Erforderliche Assemblies früh laden (MessageBox wird bereits bei den Startprüfungen benötigt)
+    Add-Type -AssemblyName PresentationFramework
+    Add-Type -AssemblyName PresentationCore
+    Add-Type -AssemblyName WindowsBase
+    Add-Type -AssemblyName System.Windows.Forms
+
+
     # Prüfe auf korrekte PowerShell Version (5.1 erforderlich)
     if (-Not $PSVersionTable.PSVersion.ToString().StartsWith("5.1")) {
         $errorMsg = "Windows PowerShell Version 5.1 ist erforderlich!`nAktuelle Version: $($PSVersionTable.PSVersion)"
@@ -1649,28 +1875,28 @@ try {
     $legacyGetAvailable = [bool](Get-Command -Name Get-AdmPwdPassword -ErrorAction SilentlyContinue)
     $legacyResetAvailable = [bool](Get-Command -Name Reset-AdmPwdPassword -ErrorAction SilentlyContinue)
     $legacyModuleAvailable = $legacyGetAvailable -and $legacyResetAvailable
+    $adModuleAvailable = [bool](Get-Module -Name ActiveDirectory -ListAvailable)
 
-    if (-Not ($newModuleAvailable -or $legacyModuleAvailable)) {
-        $errorMsg = "Kein unterstütztes LAPS-Modul gefunden!`n`nErforderlich ist entweder:`n- Windows LAPS (Modul 'Laps')`noder`n- Legacy LAPS Cmdlets (Get-AdmPwdPassword/Reset-AdmPwdPassword)."
+    if (-Not ($newModuleAvailable -or $legacyModuleAvailable -or $adModuleAvailable)) {
+        $errorMsg = "Keine Moeglichkeit zum Lesen von LAPS-Passwoertern gefunden!`n`nErforderlich ist mindestens eines von:`n- Windows LAPS (Modul 'LAPS', ab Windows 10/11 bzw. Server 2019 mit Update April 2023)`n- Legacy LAPS Cmdlets (AdmPwd.PS)`n- ActiveDirectory-Modul (RSAT) fuer das direkte Lesen der LAPS-Attribute"
         Write-Log $errorMsg -Level "ERROR"
-        [System.Windows.MessageBox]::Show($errorMsg, "Fehler - LAPS Module fehlt", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        [System.Windows.MessageBox]::Show($errorMsg, "Fehler - Module fehlen", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
         exit 502
     }
+    if (-not $adModuleAvailable) {
+        Write-Log "ActiveDirectory-Modul (RSAT) nicht gefunden - AD-Computerliste nicht verfuegbar." -Level "WARNING"
+    }
     
-    # Lade erforderliche Assemblies für WPF-Komponenten
-    Add-Type -AssemblyName PresentationFramework
-    Add-Type -AssemblyName PresentationCore
-    Add-Type -AssemblyName WindowsBase
-    
-    Write-Log "easyLAPS Script gestartet. Logging in: $global:easyLAPSLogFile" -Level "INFO"
+    Write-Log "easyLAPS Script gestartet. Logging in: $script:LogFilePath" -Level "INFO"
     Write-Log "PowerShell Version: $($PSVersionTable.PSVersion)" -Level "INFO"
-    Write-Log "Modulstatus: Windows LAPS=$newModuleAvailable, Legacy LAPS=$legacyModuleAvailable" -Level "INFO"
+    Write-Log "Modulstatus: Windows LAPS=$newModuleAvailable, Legacy LAPS=$legacyModuleAvailable, ActiveDirectory=$adModuleAvailable" -Level "INFO"
     Write-Log "easyLAPS GUI wird gestartet..." -Level "INFO"
 
     # Hauptformular anzeigen
     Show-LAPSForm -ModuleStatus @{
         NewModuleAvailable = $newModuleAvailable
         LegacyModuleAvailable = $legacyModuleAvailable
+        ADModuleAvailable = $adModuleAvailable
     }
 
     Write-Log "easyLAPS GUI wurde vom Benutzer oder einem internen Prozess geschlossen." -Level "INFO"

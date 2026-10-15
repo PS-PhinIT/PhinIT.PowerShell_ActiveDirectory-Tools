@@ -1,5 +1,10 @@
 # easyLAPS – AD LAPS Passwort-Manager (GUI)
 
+**Version:** 0.5.0  
+**Datei:** `easyLAPS.ps1`  
+**Autor:** Andreas Hepp  
+**Letztes Update:** 14.10.2026
+
 **easyLAPS** ist ein PowerShell-WPF-Tool zum Auslesen und Verwalten von LAPS-Passwörtern im Active Directory.
 
 ## 🚀 Funktionen
@@ -7,15 +12,28 @@
 - LAPS-Passwort für ausgewählten Computer anzeigen
 - LAPS-Passwort für Einzelcomputer zurücksetzen
 - AD-Computerliste laden und per Namen filtern
-- Passwort in Zwischenablage kopieren
+- Passwort in Zwischenablage kopieren – wird nach **30 Sekunden** und beim Schließen automatisch geleert
 - CSV-Export für einen oder alle Computer
 - Passwortrotation für alle gelisteten Computer
-- Lokaler LAPS-Status-/GPO-Check
+- Lokaler LAPS-Status-/Richtlinien-Check (Windows LAPS `laps.dll`/Modul, Legacy `AdmPwd.dll`; Richtlinienquellen CSP, GPO, lokale Konfiguration, Legacy)
+- Skalierbares Fenster (Mindestgröße 700×1000)
 - Optionaler **Run Policy (local)**-Button für `Invoke-LapsPolicyProcessing` (nur lokales System)
 - Optionaler **Diagnose**-Button für `Get-LapsDiagnostics` (ZIP wird nach Erstellung direkt geöffnet)
 - Unterstützung für:
 	- **Windows LAPS** (`Get-LapsADPassword`, `Set-LapsADPasswordExpirationTime`)
 	- **Legacy LAPS (AdmPwd)** (`Get-AdmPwdPassword`, `Reset-AdmPwdPassword`)
+	- **Direktes Lesen der AD-Attribute** über das ActiveDirectory-Modul, wenn keine LAPS-Module vorhanden sind
+
+## 🔎 Auslese-Reihenfolge
+
+1. **Windows LAPS** – `Get-LapsADPassword -AsPlainText` (liest Windows-LAPS- und Legacy-Passwörter, entschlüsselt bei Berechtigung)
+2. **Legacy LAPS** – `Get-AdmPwdPassword`
+3. **AD-Attribute** – `msLAPS-Password` (Windows LAPS, unverschlüsselt) bzw. `ms-Mcs-AdmPwd` (Legacy). Vorhandene Attribute werden vorher im Schema geprüft.
+
+Kann kein Passwort gelesen werden, nennt easyLAPS die Ursache: Computer nicht gefunden, kein Passwort gespeichert (Richtlinie nicht aktiv), fehlende Leseberechtigung oder verschlüsseltes Passwort ohne Entschlüsselungsrecht.
+Verschlüsselte Passwörter (`msLAPS-EncryptedPassword`) lassen sich nur mit dem Windows-LAPS-Modul entschlüsseln.
+
+Der **Reset** nutzt `Set-LapsADPasswordExpirationTime`, dann `Reset-AdmPwdPassword` und als Fallback das direkte Setzen der Ablaufzeit (`msLAPS-PasswordExpirationTime` / `ms-Mcs-AdmPwdExpirationTime`).
 
 > Hinweis zur Rotation gemäß Microsoft Learn: Für **AD-Objekte** wird das Passwort über
 > `Set-LapsADPasswordExpirationTime` auf „abgelaufen“ gesetzt. Die tatsächliche Rotation
@@ -32,20 +50,19 @@
 
 ## 🧩 Voraussetzungen
 
-- **Windows PowerShell 5.1** (GUI/WPF)
-- **ActiveDirectory-Modul** (für `Get-ADComputer`)
-- Mindestens ein unterstützter LAPS-Pfad:
-	- Windows LAPS Modul **oder**
-	- Legacy LAPS Cmdlets (AdmPwd)
+- **Windows PowerShell 5.1** (GUI/WPF) – unter PowerShell 7 startet sich das Tool automatisch in 5.1 neu
+- **ActiveDirectory-Modul** (RSAT) für die Computerliste und das direkte Lesen der Attribute
+- Mindestens eines davon: Windows-LAPS-Modul, Legacy-LAPS-Cmdlets (AdmPwd.PS) oder ActiveDirectory-Modul
 
 ## ▶️ Verwendung
 
-1. Skript in **Windows PowerShell 5.1** starten.
-2. AD-Liste laden.
-3. Computer auswählen oder Namen eingeben.
-4. Passwort anzeigen / zurücksetzen / exportieren.
-5. Optional: **Diagnose** klicken, um LAPS-Logs als ZIP zu erzeugen und direkt zu öffnen.
-6. Optional: **Run Policy (local)** klicken, um sofort eine lokale LAPS-Policy-Verarbeitung anzustoßen.
+1. `easyLAPS.ps1` in **Windows PowerShell 5.1** starten.
+2. AD-Liste laden (optional mit Filter, `Strg+F`).
+3. Computer in der Liste auswählen (übernimmt nur den Namen) oder Namen eingeben.
+4. Passwort per **Doppelklick**, `Enter` oder **Show Password** abrufen – die Auswahl allein liest kein Passwort aus.
+5. Passwort kopieren (`Copy Password` bzw. `Strg+C` ohne Textmarkierung), zurücksetzen oder exportieren.
+6. Optional: **Diagnose** klicken, um LAPS-Logs als ZIP zu erzeugen und direkt zu öffnen.
+7. Optional: **Run Policy (local)** klicken, um sofort eine lokale LAPS-Policy-Verarbeitung anzustoßen.
 
 ## ✅ Verifizierung im Eventlog (Best Practice)
 
@@ -58,9 +75,23 @@ Für eine schnelle Erfolgskontrolle nach Policy-/Reset-Aktionen prüfe im Kanal
 - `10018` = Passwort erfolgreich in AD aktualisiert
 - `10020` = lokales Admin-Konto erfolgreich aktualisiert
 
-## 🔐 Hinweis
+## 🔐 Sicherheitshinweise
 
-CSV-Exporte enthalten das Passwort im Klartext und sollten nur in geschützten Speicherorten abgelegt werden.
+- CSV-Exporte enthalten Passwörter im **Klartext** – nur in geschützten Speicherorten ablegen und nach Gebrauch löschen.
+- Passwörter werden nicht geloggt; Logs liegen unter `Logs\` neben dem Skript (rotierend).
+- Benutzereinstellungen: `HKCU:\Software\easyIT\easyLAPS`.
+- Siehe auch [`SECURITY.md`](../SECURITY.md).
+
+## 📁 Ordnerstruktur
+
+```
+easyLAPS/
+├── easyLAPS.ps1        # GUI-Tool
+├── README.md
+├── CHANGELOG.md
+├── LICENSE
+└── Install/            # LAPS-Installations-/Schema-Skript und Legacy-MSI (siehe Install/README.md)
+```
 
 ## 📚 MS Learn Referenzen
 
@@ -78,4 +109,8 @@ CSV-Exporte enthalten das Passwort im Klartext und sollten nur in geschützten S
 
 ## 📝 Changelog
 
-Siehe `CHANGELOG.md`.
+Siehe [`CHANGELOG.md`](CHANGELOG.md).
+
+## ⚖️ Lizenz
+
+MIT-Lizenz, siehe [`LICENSE`](LICENSE).
