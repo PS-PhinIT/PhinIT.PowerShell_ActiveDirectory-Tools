@@ -1,12 +1,5 @@
 # Changelog
 
-Änderungen auf Repository-Ebene. Tool-spezifische Änderungen stehen im jeweiligen Tool-Ordner:
-
-- [easyBITKEYS – CHANGELOG](easyBITKeys/CHANGELOG.md)
-- [easyLAPS – CHANGELOG](easyLAPS/CHANGELOG.md)
-
-Rekonstruiert aus der Git-Historie (im Repository existieren keine Pull Requests).
-
 ## 2026-10-14 – Funktionserweiterung BitLocker-/LAPS-Auslesen
 
 ### Hinzugefügt / Behoben
